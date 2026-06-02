@@ -43,8 +43,6 @@ from aily.voice.downloader import FeishuVoiceDownloader, FeishuVoiceError
 from aily.voice.transcriber import WhisperTranscriber, TranscriptionError
 from aily.network.tailscale import TailscaleClient
 from aily.sessions.dikiwi_mind import DikiwiMind
-from aily.sessions.reactor_scheduler import ReactorScheduler
-from aily.sessions.entrepreneur_scheduler import EntrepreneurScheduler
 from aily.llm.provider_routes import PrimaryLLMRoute
 from aily.writer.dikiwi_obsidian import DikiwiObsidianWriter
 from aily.gating.drainage import RainDrop, RainType, StreamType
@@ -119,10 +117,8 @@ ui_rate_limiter = FixedWindowRateLimiter(
 ) if SETTINGS.hosted_mode else None
 audit_logger = AuditLogger(SETTINGS.resolved_audit_log_path)
 
-# Three-Mind System schedulers
+# DIKIWI continuous knowledge processing
 dikiwi_mind: DikiwiMind | None = None
-innovation_scheduler: ReactorScheduler | None = None
-entrepreneur_scheduler: EntrepreneurScheduler | None = None
 tailscale_client = TailscaleClient()
 
 ERROR_MESSAGES = {
@@ -578,10 +574,6 @@ async def _dispatch_job(job: dict) -> None:
         await _process_file_job(job)
     elif job["type"] == "image_ocr":
         await _process_image_job(job)
-    elif job["type"] == "reactor_evaluate":
-        await _process_reactor_job(job)
-    elif job["type"] == "entrepreneur_evaluate":
-        await _process_entrepreneur_job(job)
     else:
         raise ValueError(f"Unknown job type: {job['type']}")
     await emit_ui_event(
@@ -591,63 +583,6 @@ async def _dispatch_job(job: dict) -> None:
         job_id=job.get("id"),
         job_type=job.get("type"),
     )
-
-
-async def _process_reactor_job(job: dict) -> None:
-    """Dispatch Reactor evaluation from queue."""
-    if innovation_scheduler is None:
-        logger.warning("Reactor scheduler not available, skipping job %s", job.get("id"))
-        return
-    context = job.get("payload", {}).get("context", {})
-    proposals = await innovation_scheduler.evaluate_context(context, persist=True, output=True)
-    logger.info(
-        "Reactor evaluation completed for job %s: %d proposals",
-        job.get("id"),
-        len(proposals),
-    )
-    if (
-        proposals
-        and entrepreneur_scheduler is not None
-        and getattr(entrepreneur_scheduler, "enabled", False) is True
-        and SETTINGS.minds.entrepreneur_enabled
-    ):
-        await db.enqueue(
-            "entrepreneur_evaluate",
-            {
-                "pipeline_id": context.get("pipeline_id"),
-                "proposal_ids": [proposal.proposal_id for proposal in proposals],
-            },
-        )
-
-
-async def _process_entrepreneur_job(job: dict) -> None:
-    """Dispatch Entrepreneur evaluation from queue."""
-    if entrepreneur_scheduler is None:
-        logger.warning("Entrepreneur scheduler not available, skipping job %s", job.get("id"))
-        return
-    if not SETTINGS.minds.entrepreneur_enabled or getattr(entrepreneur_scheduler, "enabled", False) is not True:
-        logger.info("Entrepreneur mind disabled, skipping job %s", job.get("id"))
-        await emit_ui_event(
-            "proposal_review_skipped",
-            job_id=job.get("id"),
-            pipeline_id=job.get("payload", {}).get("pipeline_id"),
-            reason="entrepreneur_disabled",
-        )
-        return
-    await emit_ui_event(
-        "proposal_review_started",
-        job_id=job.get("id"),
-        pipeline_id=job.get("payload", {}).get("pipeline_id"),
-        provider=getattr(entrepreneur_scheduler.llm_client, "_provider_name", lambda: "unknown")(),
-        model=getattr(entrepreneur_scheduler.llm_client, "model", ""),
-    )
-    await entrepreneur_scheduler._run_session_wrapper()
-    await emit_ui_event(
-        "proposal_review_completed",
-        job_id=job.get("id"),
-        pipeline_id=job.get("payload", {}).get("pipeline_id"),
-    )
-    logger.info("Entrepreneur evaluation completed for job %s", job.get("id"))
 
 
 async def _process_url_job(job: dict) -> None:
@@ -1819,81 +1754,6 @@ async def _handle_ui_upload_batch(files: list[tuple[UploadFile, str]], batch_id:
     return {"batch_id": batch_id, "uploads": accepted, "status": "queued"}
 
 
-def _batch_reached_impact(batch: Any) -> bool:
-    """Return true when a DIKIWI batch produced graph-level impact output."""
-    if getattr(batch, "higher_order_triggered", False):
-        return True
-    for result in getattr(batch, "results", []) or []:
-        stage = getattr(result, "final_stage_reached", None)
-        if getattr(stage, "name", "") == "IMPACT":
-            return True
-    return False
-
-
-async def _run_studio_business_flow(batch_id: str, batch: Any) -> dict[str, Any]:
-    """Run Reactor and Entrepreneur from the same Studio batch path users exercise."""
-    pipeline_ids = [result.pipeline_id for result in getattr(batch, "results", []) or []]
-    if not _batch_reached_impact(batch):
-        await emit_ui_event(
-            "business_flow_skipped",
-            batch_id=batch_id,
-            pipeline_ids=pipeline_ids,
-            reason="batch_did_not_reach_impact",
-        )
-        return {"ran": False, "reason": "batch_did_not_reach_impact", "proposal_count": 0}
-    if innovation_scheduler is None:
-        await emit_ui_event(
-            "business_flow_skipped",
-            batch_id=batch_id,
-            pipeline_ids=pipeline_ids,
-            reason="reactor_scheduler_unavailable",
-        )
-        return {"ran": False, "reason": "reactor_scheduler_unavailable", "proposal_count": 0}
-
-    context = await innovation_scheduler._gather_context()
-    context["studio_batch"] = {
-        "batch_id": batch_id,
-        "pipeline_ids": pipeline_ids,
-        "incremental_ratio": getattr(batch, "incremental_ratio", 0.0),
-        "incremental_threshold": getattr(batch, "incremental_threshold", 0.0),
-        "higher_order_triggered": getattr(batch, "higher_order_triggered", False),
-    }
-
-    provider = getattr(innovation_scheduler.llm_client, "_provider_name", lambda: "unknown")()
-    await emit_ui_event(
-        "proposal_generation_started",
-        batch_id=batch_id,
-        pipeline_ids=pipeline_ids,
-        provider=provider,
-        model=getattr(innovation_scheduler.llm_client, "model", ""),
-    )
-    proposals = await innovation_scheduler.evaluate_context(context, persist=True, output=True)
-    await emit_ui_event(
-        "proposal_generation_completed",
-        batch_id=batch_id,
-        pipeline_ids=pipeline_ids,
-        proposal_count=len(proposals),
-    )
-
-    if proposals and entrepreneur_scheduler is not None:
-        await emit_ui_event(
-            "proposal_review_started",
-            batch_id=batch_id,
-            pipeline_ids=pipeline_ids,
-            provider=getattr(entrepreneur_scheduler.llm_client, "_provider_name", lambda: "unknown")(),
-            model=getattr(entrepreneur_scheduler.llm_client, "model", ""),
-        )
-        await entrepreneur_scheduler._run_session_wrapper()
-        await emit_ui_event(
-            "proposal_review_completed",
-            batch_id=batch_id,
-            pipeline_ids=pipeline_ids,
-            proposal_count=len(proposals),
-        )
-
-    return {"ran": True, "reason": "", "proposal_count": len(proposals)}
-
-
 async def _process_ui_upload_batch(batch_id: str, items: list[dict[str, Any]]) -> None:
     process_items = [item for item in items if not item["duplicate"]]
     try:
@@ -2020,7 +1880,10 @@ async def _process_ui_upload_batch(batch_id: str, items: list[dict[str, Any]]) -
                     },
                 )
 
-        business_result = await _run_studio_business_flow(batch_id, batch)
+        # Value generation (Insight/Wisdom/Impact, business artifacts) is no
+        # longer auto-triggered on ingestion. It runs only via the explicit,
+        # approval-gated value workflow. Foundation ingestion stops at Knowledge.
+        business_result = {"ran": False, "reason": "auto_business_flow_disabled", "proposal_count": 0}
         await emit_ui_event(
             "upload_batch_completed",
             batch_id=batch_id,
@@ -2188,8 +2051,6 @@ async def _ui_status_provider() -> dict[str, Any]:
         },
         "minds": {
             "dikiwi": dikiwi_mind is not None,
-            "reactor": innovation_scheduler is not None,
-            "entrepreneur": entrepreneur_scheduler is not None,
         },
         "inbox": inbox_snapshot,
         "workflows": workflow_counts,
@@ -2847,41 +2708,6 @@ async def _ui_control_handler(action: str, payload: dict[str, Any]) -> dict[str,
     raise HTTPException(status_code=400, detail=f"Unsupported control action: {action}")
 
 
-async def _tool_executor(action: str, **kwargs) -> dict:
-    """Execute lightweight tools for GStack Agent."""
-
-    if action == "run_tests":
-        return {
-            "passed": False,
-            "disabled": True,
-            "error": "Legacy test runner removed for the Aily V1 test redesign",
-        }
-
-    elif action == "health_check":
-        # Check if the app can start
-        try:
-            # Simple import check
-            import aily.main
-            return {"status": "ok", "checks": {"import": "pass"}}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    elif action == "analyze_codebase":
-        # Count files, LOC, etc
-        try:
-            py_files = list(Path(".").rglob("*.py"))
-            total_lines = sum(len(f.read_text().split("\n")) for f in py_files[:50])
-            return {
-                "files": len(py_files),
-                "lines_of_code": total_lines,
-                "test_files": len([f for f in py_files if "test" in f.name]),
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-    return {"status": "unknown_action", "action": action}
-
-
 def _validate_runtime_security_config() -> None:
     errors = SETTINGS.validate_runtime_security()
     if errors:
@@ -2891,7 +2717,7 @@ def _validate_runtime_security_config() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global worker, scheduler, digest_scheduler, learning_loop, ws_client
-    global dikiwi_mind, innovation_scheduler, entrepreneur_scheduler
+    global dikiwi_mind
     global browser_manager_instance
     global source_worker_stop, source_worker_tasks, inbox_watcher
     _validate_runtime_security_config()
@@ -3007,62 +2833,6 @@ async def lifespan(app: FastAPI):
     )
     digest_scheduler.start()
     # Initialize and start Innovation and Entrepreneur Minds
-    # (DIKIWI Mind was already initialized earlier for WebSocket routing)
-    try:
-        # Innovation Mind - Reactor: 8 methods running in parallel
-        from aily.sessions.reactor_scheduler import NozzleConfig
-        nozzle_config = NozzleConfig(
-            min_confidence=SETTINGS.minds.proposal_min_confidence,
-            max_proposals_per_session=SETTINGS.minds.proposal_max_per_session,
-        )
-        innovation_scheduler = ReactorScheduler(
-            llm_client=llm_resolver("reactor"),
-            graph_db=graph_db,
-            obsidian_writer=dikiwi_writer or writer,
-            feishu_pusher=pusher,
-            schedule_hour=SETTINGS.minds.innovation_time.hour,
-            schedule_minute=SETTINGS.minds.innovation_time.minute,
-            circuit_breaker_threshold=SETTINGS.minds.circuit_breaker_threshold,
-            enabled=SETTINGS.minds.innovation_enabled,
-            nozzle_config=nozzle_config,
-            method_timeout_seconds=SETTINGS.reactor_method_timeout_seconds,
-        )
-        if SETTINGS.minds.innovation_enabled:
-            innovation_scheduler.start()
-            logger.info("Reactor Innovation Mind started (8am daily - 8 methods in parallel)")
-
-        # Entrepreneur Mind - 9am daily GStack analysis with agentic execution
-        entrepreneur_scheduler = EntrepreneurScheduler(
-            llm_client=llm_resolver("entrepreneur"),
-            graph_db=graph_db,
-            innovation_scheduler=innovation_scheduler,
-            obsidian_writer=dikiwi_writer or writer,
-            feishu_pusher=pusher,
-            schedule_hour=SETTINGS.minds.entrepreneur_time.hour,
-            schedule_minute=SETTINGS.minds.entrepreneur_time.minute,
-            proposal_min_confidence=SETTINGS.minds.proposal_min_confidence,
-            proposal_max_per_session=SETTINGS.minds.proposal_max_per_session,
-            circuit_breaker_threshold=SETTINGS.minds.circuit_breaker_threshold,
-            enabled=SETTINGS.minds.entrepreneur_enabled,
-            tool_executor=_tool_executor,
-            gstack_llm_client=llm_resolver("gstack"),
-            guru_llm_client=llm_resolver("guru"),
-        )
-        if SETTINGS.minds.entrepreneur_enabled:
-            entrepreneur_scheduler.start()
-            logger.info("Entrepreneur Mind (Agentic) started (9am daily GStack with real actions)")
-
-        # Wire Innovation and Entrepreneur into DIKIWI Mind for per-pipeline evaluation
-        if dikiwi_mind and innovation_scheduler:
-            dikiwi_mind.reactor_scheduler = innovation_scheduler
-        if dikiwi_mind and entrepreneur_scheduler:
-            dikiwi_mind.entrepreneur_scheduler = entrepreneur_scheduler
-
-        logger.info("Three-Mind System initialized")
-    except Exception:
-        logger.exception("Failed to initialize Three-Mind System")
-        # Don't raise - system can work without minds
-
     logger.info("Aily startup complete")
     yield
     if ws_client:
@@ -3073,11 +2843,6 @@ async def lifespan(app: FastAPI):
         digest_scheduler.stop()
     if scheduler:
         scheduler.stop()
-    # Shutdown Three-Mind System
-    if innovation_scheduler:
-        innovation_scheduler.stop()
-    if entrepreneur_scheduler:
-        entrepreneur_scheduler.stop()
     if source_worker_stop:
         source_worker_stop.set()
     for task in workflow_tasks.values():
