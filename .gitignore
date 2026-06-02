@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.local
+*.local
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+
+# Local runtime data (Aily writes to ~/.aily by default; ignore any in-repo copies)
+.aily/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3

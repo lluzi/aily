@@ -1,0 +1,14 @@
+{
+  "id": "aily-copilot",
+  "name": "Aily Copilot",
+  "version": "0.3.0",
+  "minAppVersion": "1.11.4",
+  "isDesktopOnly": false,
+  "description": "Aily's Obsidian-native Copilot, forked from Obsidian Copilot and connected to the Aily knowledge backend.",
+  "author": "Aily, based on Obsidian Copilot by Logan Yang",
+  "authorUrl": "https://github.com/qfliuyang/aily",
+  "fundingUrl": {
+    "Obsidian Copilot": "https://www.buymeacoffee.com/logancyang",
+    "GitHub Sponsor": "https://github.com/sponsors/logancyang"
+  }
+}
