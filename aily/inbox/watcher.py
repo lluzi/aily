@@ -52,6 +52,7 @@ class WatchedInboxService:
         poll_interval_seconds: float = 5.0,
         file_stable_seconds: float = 2.0,
         max_pending_jobs: int = 500,
+        archive_processed: bool = False,
         emit_event: EventEmitter | None = None,
     ) -> None:
         self.source_store = source_store
@@ -59,6 +60,7 @@ class WatchedInboxService:
         self.poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self.file_stable_seconds = max(0.0, float(file_stable_seconds))
         self.max_pending_jobs = max_pending_jobs
+        self.archive_processed = archive_processed
         self.emit_event = emit_event
         self._task: asyncio.Task[None] | None = None
         self._stop_event: asyncio.Event | None = None
@@ -127,6 +129,8 @@ class WatchedInboxService:
                 self.total_registered += 1
                 if result.queued:
                     self.total_queued += 1
+                if self.archive_processed:
+                    self._archive_path(path)
         return results
 
     async def _run(self) -> None:
@@ -152,6 +156,23 @@ class WatchedInboxService:
         if path.name.startswith("."):
             return False
         return path.suffix.lower() not in _SKIP_SUFFIXES
+
+    def _archive_path(self, path: Path) -> None:
+        """Move a processed original out of the inbox so the vault stays clean.
+
+        The durable bytes already live in the source object store; the inbox is a
+        queue we empty, not a library. Files land in ``<inbox>/.processed``.
+        """
+        archive_dir = self.inbox_path / ".processed"
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            target = archive_dir / path.name
+            if target.exists():
+                target = archive_dir / f"{path.stem}-{uuid.uuid4().hex[:8]}{path.suffix}"
+            path.rename(target)
+            self._seen_signatures.pop(path, None)
+        except OSError as exc:
+            logger.warning("Failed to archive processed inbox file %s: %s", path, exc)
 
     def _signature(self, path: Path) -> tuple[int, int] | None:
         try:

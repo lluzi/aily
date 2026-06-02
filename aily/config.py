@@ -96,10 +96,17 @@ class Settings(BaseSettings):
     # V1 orchestration settings
     orchestrator_enabled: bool = False
     orchestrator_shadow_mode: bool = True
+    # In-vault inbox: when a vault is configured the canonical drop zone is
+    # <vault>/00-Chaos/_inbox (see resolved_inbox_path); inbox_path is the
+    # fallback used only when no vault is set.
     inbox_path: Path = Path.home() / "Aily" / "Inbox"
-    inbox_watcher_enabled: bool = False
+    inbox_watcher_enabled: bool = True
     inbox_poll_interval_seconds: float = 5.0
     inbox_file_stable_seconds: float = 2.0
+    # After a dropped file is registered + queued, move the original out of the
+    # inbox into <inbox>/.processed so the vault stays clean (the bytes already
+    # live in the durable source object store). URL-pointer files are moved too.
+    inbox_archive_processed: bool = True
     research_daily_budget: int = 10
     email_delivery_enabled: bool = False
 
@@ -183,10 +190,24 @@ class Settings(BaseSettings):
     def resolved_audit_log_path(self) -> Path:
         return self.audit_log_path or (self.aily_data_dir / "audit.jsonl")
 
+    @property
+    def resolved_inbox_path(self) -> Path:
+        """Canonical in-vault drop zone.
+
+        When a vault is configured, the inbox lives inside it at
+        ``<vault>/00-Chaos/_inbox`` so it syncs with the vault and is reachable
+        on mobile. Falls back to the standalone ``inbox_path`` when no vault is
+        set.
+        """
+        vault = (self.obsidian_vault_path or self.dikiwi_vault_path or "").strip()
+        if vault:
+            return Path(vault).expanduser() / "00-Chaos" / "_inbox"
+        return self.inbox_path.expanduser()
+
     # Thinking system configuration
     thinking: ThinkingConfig = ThinkingConfig()
 
-    # Three-Mind System configuration
+    # DIKIWI configuration
     minds: MindsConfig = field(default_factory=MindsConfig)
 
     def model_post_init(self, __context: Any) -> None:

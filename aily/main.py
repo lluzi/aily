@@ -1719,7 +1719,7 @@ async def _ui_status_provider() -> dict[str, Any]:
     source_workers_running = sum(1 for task in source_worker_tasks if not task.done())
     inbox_snapshot = inbox_watcher.snapshot() if inbox_watcher else {
         "running": False,
-        "inbox_path": str(SETTINGS.inbox_path),
+        "inbox_path": str(SETTINGS.resolved_inbox_path),
     }
     workflow_counts = {
         "active": sum(1 for task in workflow_tasks.values() if not task.done()),
@@ -2477,10 +2477,11 @@ async def lifespan(app: FastAPI):
     if SETTINGS.inbox_watcher_enabled:
         inbox_watcher = WatchedInboxService(
             source_store=source_store,
-            inbox_path=SETTINGS.inbox_path,
+            inbox_path=SETTINGS.resolved_inbox_path,
             poll_interval_seconds=SETTINGS.inbox_poll_interval_seconds,
             file_stable_seconds=SETTINGS.inbox_file_stable_seconds,
             max_pending_jobs=SETTINGS.source_job_max_pending,
+            archive_processed=SETTINGS.inbox_archive_processed,
             emit_event=emit_ui_event,
         )
         await inbox_watcher.start()
