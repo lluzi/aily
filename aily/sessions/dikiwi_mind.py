@@ -311,8 +311,6 @@ class DikiwiMind:
         dikiwi_obsidian_writer: DikiwiObsidianWriter | None = None,
         llm_client: Any | None = None,
         llm_client_resolver: Any | None = None,
-        reactor_scheduler: Any | None = None,
-        entrepreneur_scheduler: Any | None = None,
         queue_db: Any | None = None,
     ) -> None:
         """Initialize LLM-powered DIKIWI mind.
@@ -326,8 +324,6 @@ class DikiwiMind:
             model: Kimi model to use (recommended: kimi-k2.5) - Standard API only
             dikiwi_obsidian_writer: Optional enhanced Obsidian writer (file-based with Dataview)
             llm_client: Pre-configured LLM client (e.g., Coding Plan with kimi-k2.5)
-            reactor_scheduler: Optional ReactorScheduler to run framework evaluation on DIKIWI outputs
-            entrepreneur_scheduler: Optional EntrepreneurScheduler for per-pipeline business evaluation
         """
         # Use pre-configured client if provided, otherwise create Standard API client
         if llm_client is not None:
@@ -341,8 +337,6 @@ class DikiwiMind:
         self.obsidian_writer = obsidian_writer
         self.dikiwi_obsidian_writer = dikiwi_obsidian_writer
         self.browser_manager = browser_manager
-        self.reactor_scheduler = reactor_scheduler
-        self.entrepreneur_scheduler = entrepreneur_scheduler
         self.queue_db = queue_db
 
         self._markdownizer = MarkdownizeProcessor(browser_manager=browser_manager)
@@ -362,57 +356,6 @@ class DikiwiMind:
     def _client_for_stage(self, stage: DikiwiStage | str) -> Any:
         stage_name = stage.name.lower() if isinstance(stage, DikiwiStage) else str(stage).strip().lower()
         return self._client_for_workload(f"dikiwi.{stage_name}")
-
-    def _entrepreneur_evaluation_enabled(self) -> bool:
-        """Return whether DIKIWI may trigger per-pipeline business evaluation.
-
-        The Entrepreneur scheduler object can exist even when the mind is disabled
-        so that status APIs and later manual enablement still have an object to
-        inspect. DIKIWI must therefore check the scheduler's explicit runtime
-        flag before enqueueing side-effect jobs; object existence alone is not an
-        execution contract.
-        """
-        return bool(
-            self.entrepreneur_scheduler is not None
-            and SETTINGS.minds.entrepreneur_enabled
-            and getattr(self.entrepreneur_scheduler, "enabled", False) is True
-        )
-
-    async def _maybe_enqueue_entrepreneur_evaluation(
-        self,
-        *,
-        pipeline_id: str,
-        pipeline_status: str,
-        residual_result: StageResult | None,
-    ) -> None:
-        """Queue Entrepreneur evaluation only when that mind is explicitly enabled."""
-        if (
-            pipeline_status != "completed"
-            or not self._entrepreneur_evaluation_enabled()
-            or not residual_result
-            or not residual_result.success
-            or not residual_result.data.get("proposals")
-        ):
-            return
-
-        if not self.queue_db:
-            return
-
-        try:
-            logger.info(
-                "[DIKIWI] Enqueuing Entrepreneur evaluation for %d proposals from pipeline %s",
-                len(residual_result.data["proposals"]),
-                pipeline_id,
-            )
-            await self.queue_db.enqueue(
-                "entrepreneur_evaluate",
-                {
-                    "pipeline_id": pipeline_id,
-                    "proposals": residual_result.data["proposals"],
-                },
-            )
-        except Exception as exc:
-            logger.warning("[DIKIWI] Entrepreneur enqueue failed: %s", exc)
 
     def _get_or_create_memory(self, pipeline_id: str) -> ConversationMemory:
         """Get or create conversation memory for a pipeline."""
@@ -770,106 +713,20 @@ class DikiwiMind:
             # Run pipeline
             pipeline = await orchestrator.run_pipeline(ctx)
 
-            # MAC loop: Reactor (multiply) <-> Residual (accumulate)
+            # Post-IMPACT Residual synthesis. The autonomous Reactor/Entrepreneur
+            # screening that previously consumed these proposals has been removed;
+            # value generation now runs only through the explicit value workflow.
             residual_result: StageResult | None = None
             has_impact = any(
                 sr.stage == DikiwiStage.IMPACT and sr.success
                 for sr in ctx.stage_results
             )
-            if (
-                pipeline.status == "completed"
-                and has_impact
-                and self.reactor_scheduler
-                and SETTINGS.minds.mac_enabled
-            ):
-                accumulated_proposals: list[dict[str, Any]] = []
-                for mac_round in range(self._MAC_ITERATIONS):
-                    try:
-                        context = await self.reactor_scheduler._gather_context()
-                        if mac_round > 0 and residual_result and residual_result.success:
-                            context["residual_accumulated"] = {
-                                "summary": residual_result.data.get("summary", ""),
-                                "key_findings": residual_result.data.get("key_findings", []),
-                                "reactor_synthesis": residual_result.data.get("reactor_synthesis", ""),
-                                "previous_proposals": accumulated_proposals,
-                            }
-
-                        reactor_proposals = await self.reactor_scheduler.evaluate_context(
-                            context, budget=ctx.budget
-                        )
-                        ctx.artifact_store["reactor_proposals"] = reactor_proposals
-                        accumulated_proposals.extend(
-                            [
-                                {"title": p.title, "content": p.content, "confidence": p.confidence}
-                                for p in reactor_proposals
-                            ]
-                        )
-                        logger.info(
-                            "[DIKIWI] MAC round %d/%d: Reactor generated %d proposals for pipeline %s",
-                            mac_round + 1,
-                            self._MAC_ITERATIONS,
-                            len(reactor_proposals),
-                            pipeline_id,
-                        )
-
-                        agent = ResidualAgent()
-                        if mac_round == self._MAC_ITERATIONS - 1:
-                            residual_result = await agent.execute(ctx)
-                        else:
-                            residual_result = await agent.synthesize(ctx)
-
-                    except Exception as exc:
-                        logger.warning("[DIKIWI] MAC round %d failed: %s", mac_round + 1, exc)
-                        break
-
-                if residual_result:
-                    ctx.stage_results.append(residual_result)
-
-                # Promote Residual proposals through Reactor innovation screening
-                if self.reactor_scheduler and residual_result and residual_result.success:
-                    try:
-                        approved = await self.reactor_scheduler._evaluate_residual_proposals()
-                        logger.info(
-                            "[DIKIWI] Reactor approved %d residual proposals for business evaluation (pipeline %s)",
-                            len(approved),
-                            pipeline_id,
-                        )
-                    except Exception as exc:
-                        logger.warning("[DIKIWI] Reactor residual screening failed: %s", exc)
-
-            # Fallback: run Residual alone if no Reactor scheduler or MAC disabled
-            if pipeline.status == "completed" and has_impact and not residual_result:
+            if pipeline.status == "completed" and has_impact:
                 try:
                     residual_result = await ResidualAgent().execute(ctx)
                     ctx.stage_results.append(residual_result)
                 except Exception as exc:
                     logger.warning("[DIKIWI] ResidualAgent failed: %s", exc)
-
-                # Promote Residual proposals through Reactor innovation screening
-                if (
-                    self.reactor_scheduler
-                    and residual_result
-                    and residual_result.success
-                ):
-                    try:
-                        approved = await self.reactor_scheduler._evaluate_residual_proposals()
-                        logger.info(
-                            "[DIKIWI] Reactor approved %d residual proposals for business evaluation (pipeline %s)",
-                            len(approved),
-                            pipeline_id,
-                        )
-                    except Exception as exc:
-                        logger.warning("[DIKIWI] Reactor residual screening failed: %s", exc)
-
-            # Per-pipeline Entrepreneur evaluation for business proposals.
-            # A scheduler instance is created during app startup even when the
-            # Entrepreneur mind is disabled; only enqueue when its enabled flag is
-            # explicitly true.
-            await self._maybe_enqueue_entrepreneur_evaluation(
-                pipeline_id=pipeline_id,
-                pipeline_status=pipeline.status,
-                residual_result=residual_result,
-            )
 
             # Transfer results
             result.stage_results = list(ctx.stage_results)
