@@ -20,12 +20,8 @@ from aily.business import BusinessPlanStore, BusinessPlanSynthesizer
 from aily.config import SETTINGS
 from aily.copilot.router import create_copilot_router
 from aily.queue.db import QueueDB
-from aily.queue.worker import JobWorker
 from aily.browser.fetcher import BrowserFetcher, FetchError
-from aily.push.feishu import FeishuPusher
 from aily.writer.obsidian import ObsidianWriter, ObsidianAPIError
-from aily.bot import webhook
-from aily.bot.ws_client import get_ws_client
 from aily.parser import registry
 from aily.parser.parsers import (
     parse_kimi,
@@ -35,13 +31,7 @@ from aily.parser.parsers import (
     parse_youtube,
 )
 from aily.graph.db import GraphDB
-from aily.scheduler.jobs import PassiveCaptureScheduler, DailyDigestScheduler
 from aily.llm.client import LLMClient
-from aily.digest.pipeline import DigestPipeline
-from aily.learning.loop import LearningLoop
-from aily.voice.downloader import FeishuVoiceDownloader, FeishuVoiceError
-from aily.voice.transcriber import WhisperTranscriber, TranscriptionError
-from aily.network.tailscale import TailscaleClient
 from aily.sessions.dikiwi_mind import DikiwiMind
 from aily.llm.provider_routes import PrimaryLLMRoute
 from aily.writer.dikiwi_obsidian import DikiwiObsidianWriter
@@ -90,20 +80,14 @@ chat_store = ChatStore(SETTINGS.chat_store_db_path)
 research_store = ResearchStore(SETTINGS.research_store_db_path)
 business_plan_store = BusinessPlanStore(SETTINGS.business_plan_store_db_path)
 fetcher = BrowserFetcher()
-pusher = FeishuPusher(SETTINGS.feishu_app_id, SETTINGS.feishu_app_secret)
 writer = ObsidianWriter(
     SETTINGS.obsidian_rest_api_key,
     SETTINGS.obsidian_vault_path,
     SETTINGS.obsidian_rest_api_port,
     queue_db=db,
 )
-worker: JobWorker | None = None
-scheduler: PassiveCaptureScheduler | None = None
 llm_resolver = PrimaryLLMRoute.build_settings_resolver(SETTINGS)
 llm_client = llm_resolver("default")
-digest_scheduler: DailyDigestScheduler | None = None
-learning_loop: LearningLoop | None = None
-ws_client = None
 browser_manager_instance = None
 ui_upload_tasks: dict[str, asyncio.Task[Any]] = {}
 source_worker_tasks: list[asyncio.Task[Any]] = []
@@ -119,7 +103,6 @@ audit_logger = AuditLogger(SETTINGS.resolved_audit_log_path)
 
 # DIKIWI continuous knowledge processing
 dikiwi_mind: DikiwiMind | None = None
-tailscale_client = TailscaleClient()
 
 ERROR_MESSAGES = {
     "FETCH_FAILED": "Could not fetch the page. The link may be expired or require login.",
@@ -545,293 +528,6 @@ async def _select_workflow_knowledge_context(
         if len(context) >= 18:
             break
     return context
-
-
-async def _enqueue_url(url: str, open_id: str = "") -> None:
-    source = "passive" if not open_id else "manual"
-    enqueued = await db.enqueue_url(url, open_id=open_id, source=source)
-    if not enqueued:
-        logger.info("Deduplicated URL: %s", url)
-        return
-    logger.info("Enqueued URL: %s", url)
-
-
-async def _dispatch_job(job: dict) -> None:
-    await emit_ui_event(
-        "worker_status_changed",
-        worker="queue_worker",
-        state="processing",
-        job_id=job.get("id"),
-        job_type=job.get("type"),
-    )
-    if job["type"] == "url_fetch":
-        await _process_url_job(job)
-    elif job["type"] == "daily_digest":
-        await _process_digest_job(job)
-    elif job["type"] == "voice_message":
-        await _process_voice_job(job)
-    elif job["type"] == "file_attachment":
-        await _process_file_job(job)
-    elif job["type"] == "image_ocr":
-        await _process_image_job(job)
-    else:
-        raise ValueError(f"Unknown job type: {job['type']}")
-    await emit_ui_event(
-        "worker_status_changed",
-        worker="queue_worker",
-        state="idle",
-        job_id=job.get("id"),
-        job_type=job.get("type"),
-    )
-
-
-async def _process_url_job(job: dict) -> None:
-    url = job["payload"]["url"]
-    open_id = job["payload"].get("open_id", "")
-    note_path = ""
-    try:
-        raw_text = await fetcher.fetch(url)
-        parsed = registry.parse(url, raw_text)
-        note_path = await writer.write_note(parsed.title, parsed.markdown, url)
-    except FetchError as exc:
-        await _notify_failure(open_id, "FETCH_FAILED")
-        raise
-    except ObsidianAPIError:
-        await _notify_failure(open_id, "OBSIDIAN_REJECTED")
-        raise
-    except Exception:
-        await _notify_failure(open_id, "PARSE_FAILED")
-        raise
-
-    if open_id:
-        try:
-            await pusher.send_message(open_id, f"Saved to Obsidian: {note_path}")
-        except Exception:
-            logger.exception("Push failed for job %s", job["id"])
-            await _notify_failure(open_id, "PUSH_FAILED")
-
-
-async def _process_digest_job(job: dict) -> None:
-    open_id = job["payload"].get("open_id", SETTINGS.aily_digest_feishu_open_id)
-    pipeline = DigestPipeline(graph_db, db, llm_client, writer, pusher)
-    await pipeline.run(open_id=open_id)
-
-
-async def _process_voice_job(job: dict) -> None:
-    """Process a voice message: download, transcribe, and create note."""
-    payload = job["payload"]
-    file_key = payload["file_key"]
-    file_name = payload.get("file_name", "voice.mp3")
-    open_id = payload.get("open_id", "")
-
-    # Get Whisper API key (fallback to LLM API key for OpenAI)
-    whisper_key = SETTINGS.whisper_api_key or SETTINGS.llm_api_key
-    if not whisper_key:
-        logger.error("No Whisper API key configured")
-        if open_id:
-            await pusher.send_message(open_id, "Voice transcription not configured.")
-        return
-
-    downloader = FeishuVoiceDownloader(
-        app_id=SETTINGS.feishu_app_id,
-        app_secret=SETTINGS.feishu_app_secret,
-        temp_dir=SETTINGS.voice_temp_dir,
-    )
-    transcriber = WhisperTranscriber(
-        api_key=whisper_key,
-        model=SETTINGS.whisper_model,
-    )
-
-    try:
-        # Download voice file
-        download_result = await downloader.download_voice(file_key, file_name)
-
-        # Transcribe
-        transcription = await transcriber.transcribe(download_result.file_path)
-
-        if not transcription.text:
-            if open_id:
-                await pusher.send_message(open_id, "Could not transcribe voice message.")
-            return
-
-        # Create note from transcription
-        note_title = f"Voice Memo {job['id'][:8]}"
-        note_content = f"""# Voice Memo
-
-**Transcribed:** {transcription.text}
-
-**Language:** {transcription.language or "unknown"}
-**Duration:** {transcription.duration_seconds or "unknown"}s
-
-**Original file:** {file_name}
-"""
-        note_path = await writer.write_note(
-            note_title,
-            note_content,
-            f"feishu://voice/{file_key}",
-        )
-
-        if open_id:
-            await pusher.send_message(
-                open_id,
-                f"Voice memo transcribed and saved: {note_path}\n\nPreview: {transcription.text[:100]}..."
-            )
-
-        logger.info("Voice message processed: %s -> %s", file_key, note_path)
-
-    except FeishuVoiceError as e:
-        logger.exception("Failed to download voice message")
-        if open_id:
-            await pusher.send_message(open_id, f"Failed to download voice: {e}")
-        raise
-    except TranscriptionError as e:
-        logger.exception("Failed to transcribe voice message")
-        if open_id:
-            await pusher.send_message(open_id, f"Failed to transcribe: {e}")
-        raise
-    finally:
-        await transcriber.close()
-
-
-async def _process_file_job(job: dict) -> None:
-    """Process file attachment (PDF, document, etc) using universal processor."""
-    from aily.processing.router import ProcessingRouter
-    from aily.voice.downloader import FeishuVoiceDownloader
-
-    payload = job["payload"]
-    file_key = payload["file_key"]
-    file_name = payload.get("file_name", "document")
-    open_id = payload.get("open_id", "")
-
-    logger.info("Processing file attachment: %s (%s)", file_name, file_key)
-
-    # Download file from Feishu
-    downloader = FeishuVoiceDownloader(
-        app_id=SETTINGS.feishu_app_id,
-        app_secret=SETTINGS.feishu_app_secret,
-        temp_dir=SETTINGS.voice_temp_dir,
-    )
-
-    try:
-        # Reuse voice downloader for file download (same API)
-        download_result = await downloader.download_voice(file_key, file_name)
-        file_bytes = Path(download_result.file_path).read_bytes()
-
-        # Process with universal router
-        router = ProcessingRouter()
-        result = await router.process(file_bytes, filename=file_name)
-
-        if not result.text or result.text.startswith("["):
-            logger.warning("No text extracted from file: %s", file_name)
-            if open_id:
-                await pusher.send_message(open_id, f"Could not extract text from {file_name}")
-            return
-
-        # Create note from extracted content
-        safe_title = "".join(c for c in file_name if c.isalnum() or c in " -_").rstrip()
-        note_path = await writer.write_note(
-            title=f"File: {safe_title[:80]}",
-            markdown=result.text,
-            source_url=f"feishu://file/{file_key}",
-        )
-
-        logger.info("File processed: %s -> %s", file_name, note_path)
-
-        if open_id:
-            await pusher.send_message(
-                open_id,
-                f"Processed {file_name} ({result.source_type}): {note_path}\n\nPreview: {result.text[:100]}..."
-            )
-
-    except FeishuVoiceError as e:
-        logger.warning("File download failed: %s - %s", file_name, e)
-        if open_id:
-            await pusher.send_message(open_id, f"Could not download {file_name}: {e}")
-        raise
-    except Exception as e:
-        logger.exception("Failed to process file: %s", file_name)
-        if open_id:
-            await pusher.send_message(open_id, f"Failed to process {file_name}: {e}")
-        raise
-
-
-async def _process_image_job(job: dict) -> None:
-    """Process image with OCR."""
-    from aily.processing.router import ProcessingRouter
-    from aily.voice.downloader import FeishuVoiceDownloader
-
-    payload = job["payload"]
-    image_key = payload["image_key"]
-    open_id = payload.get("open_id", "")
-
-    logger.info("Processing image for OCR: %s", image_key)
-
-    # Download image from Feishu
-    downloader = FeishuVoiceDownloader(
-        app_id=SETTINGS.feishu_app_id,
-        app_secret=SETTINGS.feishu_app_secret,
-        temp_dir=SETTINGS.voice_temp_dir,
-    )
-
-    try:
-        download_result = await downloader.download_voice(image_key, "image.png")
-        image_bytes = Path(download_result.file_path).read_bytes()
-
-        # Process with universal router (will use ImageProcessor)
-        router = ProcessingRouter()
-        result = await router.process(image_bytes, filename="image.png")
-
-        if not result.text:
-            logger.warning("No text found in image: %s", image_key)
-            if open_id:
-                await pusher.send_message(open_id, "No text detected in image")
-            return
-
-        # Create note from OCR text
-        note_path = await writer.write_note(
-            title=f"Image OCR {job['id'][:8]}",
-            markdown=f"""# Image OCR
-
-**OCR Confidence:** {result.metadata.get('ocr_confidence', 'unknown')}
-**Text Blocks:** {result.metadata.get('text_blocks', 0)}
-
-## Extracted Text
-
-{result.text}
-""",
-            source_url=f"feishu://image/{image_key}",
-        )
-
-        logger.info("Image OCR complete: %s -> %s", image_key, note_path)
-
-        if open_id:
-            await pusher.send_message(
-                open_id,
-                f"OCR complete! Found {result.metadata.get('text_blocks', 0)} text blocks.\n\nPreview: {result.text[:100]}..."
-            )
-
-    except Exception as e:
-        logger.exception("Failed to process image: %s", image_key)
-        if open_id:
-            await pusher.send_message(open_id, f"Failed to process image: {e}")
-        raise
-
-
-async def _notify_failure(open_id: str, code: str) -> None:
-    if not open_id:
-        return
-    try:
-        await pusher.send_message(open_id, ERROR_MESSAGES[code])
-    except Exception:
-        logger.exception("Failed to send failure notification")
-
-
-async def _enqueue_digest() -> None:
-    if not SETTINGS.aily_digest_enabled:
-        return
-    open_id = SETTINGS.aily_digest_feishu_open_id
-    await db.enqueue("daily_digest", {"open_id": open_id})
-    logger.info("Enqueued daily digest")
 
 
 async def _process_ui_upload(
@@ -2020,7 +1716,6 @@ async def _ui_status_provider() -> dict[str, Any]:
         except Exception:
             graph_counts[node_type] = 0
 
-    worker_running = bool(worker and worker._task and not worker._task.done())
     source_workers_running = sum(1 for task in source_worker_tasks if not task.done())
     inbox_snapshot = inbox_watcher.snapshot() if inbox_watcher else {
         "running": False,
@@ -2041,13 +1736,9 @@ async def _ui_status_provider() -> dict[str, Any]:
         ],
         "active_uploads": sorted(ui_upload_tasks.keys()),
         "daemons": {
-            "queue_worker": worker_running,
             "source_workers": source_workers_running,
             "inbox_watcher": bool(inbox_watcher and inbox_watcher.running),
             "workflow_runner": workflow_counts["active"],
-            "passive_capture_scheduler": scheduler is not None,
-            "daily_digest_scheduler": digest_scheduler is not None,
-            "feishu_ws_client": ws_client is not None,
         },
         "minds": {
             "dikiwi": dikiwi_mind is not None,
@@ -2716,7 +2407,6 @@ def _validate_runtime_security_config() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global worker, scheduler, digest_scheduler, learning_loop, ws_client
     global dikiwi_mind
     global browser_manager_instance
     global source_worker_stop, source_worker_tasks, inbox_watcher
@@ -2770,45 +2460,15 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to initialize DIKIWI Mind")
         dikiwi_mind = None
 
-    # Start Feishu WebSocket client for receiving messages
-    # Pass dikiwi_mind for Three-Mind message routing
-    # Note: feishu_input_channel is None here (legacy gating system), we use DIKIWI now
-    ws_client = get_ws_client(db, pusher, None, dikiwi_mind)
-    ws_client.start()
-    logger.info("Feishu WebSocket client started")
+    logger.info("DIKIWI continuous processing active; foundation ingestion stops at Knowledge")
 
-    # Check Tailscale status
-    try:
-        ts_status = await tailscale_client.get_status()
-        if ts_status.is_running and ts_status.is_logged_in:
-            url = tailscale_client.get_aily_url(ts_status)
-            logger.info("Tailscale connected: %s (%s)", ts_status.magic_dns_name or ts_status.ip_addresses[0], url)
-        elif ts_status.is_running:
-            logger.info("Tailscale running but not logged in")
-        else:
-            logger.info("Tailscale not running - remote access unavailable")
-    except Exception:
-        logger.debug("Tailscale status check failed", exc_info=True)
-
-    # Three-Mind System is the primary architecture
-    # All inputs flow through DIKIWI Mind (WebSocket -> _route_to_dikiwi -> process_input)
-    logger.info("Three-Mind System active: DIKIWI (continuous) + Innovation (8am) + Entrepreneur (9am)")
-
-    if SETTINGS.obsidian_vault_path:
-        learning_loop = LearningLoop(
-            vault_path=Path(SETTINGS.obsidian_vault_path),
-            queue_db=db,
-            graph_db=graph_db,
-            llm=llm_client,
-        )
-        await learning_loop.start()
+    # URL parser registrations (used by URL ingestion path)
     registry.register(r"^https://(www\.)?kimi\.(moonshot\.cn|com)/share/", parse_kimi)
     registry.register(r"^https://monica\.im/", parse_monica)
     registry.register(r"^https://arxiv\.org/abs/", parse_arxiv)
     registry.register(r"^https://github\.com/", parse_github)
     registry.register(r"^https://(www\.)?youtube\.com/watch", parse_youtube)
-    worker = JobWorker(db, _dispatch_job)
-    await worker.start()
+
     source_worker_stop = asyncio.Event()
     source_worker_tasks = [
         asyncio.create_task(_source_worker_loop(f"source-worker-{index + 1}"))
@@ -2824,25 +2484,8 @@ async def lifespan(app: FastAPI):
             emit_event=emit_ui_event,
         )
         await inbox_watcher.start()
-    scheduler = PassiveCaptureScheduler(enqueue_fn=_enqueue_url)
-    scheduler.start()
-    digest_scheduler = DailyDigestScheduler(
-        enqueue_digest_fn=_enqueue_digest,
-        hour=SETTINGS.aily_digest_hour,
-        minute=SETTINGS.aily_digest_minute,
-    )
-    digest_scheduler.start()
-    # Initialize and start Innovation and Entrepreneur Minds
     logger.info("Aily startup complete")
     yield
-    if ws_client:
-        ws_client.stop()
-    if learning_loop:
-        await learning_loop.stop()
-    if digest_scheduler:
-        digest_scheduler.stop()
-    if scheduler:
-        scheduler.stop()
     if source_worker_stop:
         source_worker_stop.set()
     for task in workflow_tasks.values():
@@ -2858,8 +2501,6 @@ async def lifespan(app: FastAPI):
     if source_worker_tasks:
         await asyncio.gather(*source_worker_tasks, return_exceptions=True)
         source_worker_tasks = []
-    if worker:
-        await worker.stop()
     await business_plan_store.close()
     await research_store.close()
     await chat_store.close()
@@ -2939,7 +2580,6 @@ async def ready() -> dict[str, Any]:
         "studio_auth_required": SETTINGS.hosted_mode or SETTINGS.ui_auth_enabled,
     }
 
-app.include_router(webhook.router)
 app.include_router(
     create_copilot_router(
         vault_path=_studio_vault_path(),
