@@ -134,7 +134,8 @@ export interface AilyConfigResponse {
     copilot_dossier: AilyResolvedRoute;
   };
   workload_routes_json: string;
-  persistence: "runtime_only" | string;
+  /** Persistence mode, e.g. "runtime_only". */
+  persistence: string;
 }
 
 export interface AilyConfigUpdateRequest {
@@ -154,9 +155,28 @@ export interface AilyConfigUpdateRequest {
   llm_min_interval_seconds?: number;
 }
 
+export interface AilySourceResponse {
+  source_id?: string;
+  status?: string;
+  duplicate?: boolean;
+  sha256?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
 export class AilyBackendClient {
   async status(): Promise<AilyStatusResponse> {
     return this.request<AilyStatusResponse>("/api/copilot/status", "GET");
+  }
+
+  /** Submit an http(s) URL for ingestion into the source store. */
+  async submitUrl(url: string): Promise<AilySourceResponse> {
+    return this.request<AilySourceResponse>("/api/ui/sources/urls", "POST", { url });
+  }
+
+  /** Submit raw text (e.g. an editor selection) as a source for ingestion. */
+  async submitText(title: string, text: string): Promise<AilySourceResponse> {
+    return this.request<AilySourceResponse>("/api/ui/sources/texts", "POST", { title, text });
   }
 
   async config(): Promise<AilyConfigResponse> {
@@ -209,7 +229,7 @@ export class AilyBackendClient {
           : response.text || `HTTP ${response.status}`;
       throw new Error(`Aily API ${response.status}: ${detail}`);
     }
-    return parsed as AilyUploadResponse;
+    return parsed;
   }
 
   /** Creates a backend workflow plan for user review before execution. */

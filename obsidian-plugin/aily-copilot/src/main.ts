@@ -1,5 +1,6 @@
 import { BrevilabsClient } from "@/LLMProviders/brevilabsClient";
 import { DikiwiAutoTriggerService } from "@/aily/DikiwiAutoTriggerService";
+import { registerAilyCaptureCommands } from "@/aily/ailyCaptureCommands";
 import ProjectManager from "@/LLMProviders/projectManager";
 import {
   CustomModel,
@@ -165,6 +166,7 @@ export default class CopilotPlugin extends Plugin {
     this.fileParserManager = new FileParserManager(this.brevilabsClient, this.app.vault);
     this.dikiwiAutoTriggerService = new DikiwiAutoTriggerService(this.app);
     this.dikiwiAutoTriggerService.initialize();
+    registerAilyCaptureCommands(this);
 
     // Initialize ChatUIState with new architecture
     const messageRepo = new MessageRepository();
