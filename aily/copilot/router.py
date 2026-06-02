@@ -134,6 +134,79 @@ class CopilotConfigUpdateRequest(BaseModel):
     llm_min_interval_seconds: float | None = Field(default=None, ge=0.0, le=120.0)
 
 
+_FAILED_STATUSES = {"failed", "failed_retry_exhausted"}
+_PENDING_STATUSES = {"queued", "retry_pending", "stored", "deferred", "extracting"}
+_DONE_STATUSES = {"completed"}
+
+
+def _stage_states(status: str, has_markdown: bool) -> dict[str, str]:
+    """Best-effort Data/Information/Knowledge stage states.
+
+    The source store tracks a single coarse status, not per-stage progress, so
+    these are derived. They become exact once the pipeline persists per-stage
+    state per source.
+    """
+    if status in _FAILED_STATUSES:
+        return {"data": "failed", "information": "failed", "knowledge": "failed"}
+    if status in _DONE_STATUSES:
+        return {"data": "done", "information": "done", "knowledge": "done"}
+    if status in {"processing"}:
+        return {"data": "in_progress", "information": "pending", "knowledge": "pending"}
+    if status == "extracted" or has_markdown:
+        return {"data": "pending", "information": "pending", "knowledge": "pending"}
+    return {"data": "pending", "information": "pending", "knowledge": "pending"}
+
+
+def _next_action(status: str) -> str:
+    if status in _FAILED_STATUSES:
+        return "retry"
+    if status in _DONE_STATUSES:
+        return "none"
+    if status in _PENDING_STATUSES or status == "processing":
+        return "wait"
+    return "none"
+
+
+def source_status_from_row(row: dict[str, Any], package: dict[str, Any] | None) -> dict[str, Any]:
+    """Map a raw source-store row (+ optional markdown package) to the
+    Copilot-facing SourceStatus product contract."""
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    status = str(row.get("status") or "")
+    has_markdown = package is not None
+    origin = str(row.get("normalized_source") or metadata.get("origin_path") or "")
+    title = (
+        str(row.get("filename") or "")
+        or str(metadata.get("title") or "")
+        or (origin.rsplit("/", 1)[-1] if origin else "")
+        or str(row.get("source_id") or "")
+    )
+    if status in _FAILED_STATUSES:
+        conversion_status = "failed"
+    elif has_markdown or status in {"extracted", "processing", "completed"}:
+        conversion_status = "done"
+    else:
+        conversion_status = "pending"
+    last_error = str(metadata.get("retry_error") or metadata.get("error") or "") or None
+    return {
+        "source_id": str(row.get("source_id") or ""),
+        "display_title": title,
+        "source_type": str(row.get("kind") or ""),
+        "origin": origin,
+        "content_hash": row.get("sha256"),
+        "canonical_markdown_hash": (package or {}).get("markdown_sha256"),
+        "size_bytes": row.get("size_bytes"),
+        "duplicate_of_source_id": metadata.get("duplicate_of"),
+        "processing_status": status,
+        "conversion_status": conversion_status,
+        "stages": _stage_states(status, has_markdown),
+        "artifact_paths": [p for p in [(package or {}).get("package_path")] if p],
+        "last_error": last_error,
+        "created_at": row.get("created_at"),
+        "last_processed_at": row.get("updated_at"),
+        "next_action": _next_action(status),
+    }
+
+
 def create_copilot_router(
     *,
     vault_path: Path,
@@ -143,6 +216,8 @@ def create_copilot_router(
     trust_proxy_headers: bool = False,
     state_dir: Path | None = None,
     workflow_run_store: WorkflowRunStore | None = None,
+    source_store: Any | None = None,
+    source_retry_handler: Callable[[str], Any] | None = None,
 ) -> APIRouter:
     vault = vault_path.expanduser().resolve()
     state_root = (state_dir or SETTINGS.aily_data_dir).expanduser().resolve()
@@ -222,6 +297,7 @@ def create_copilot_router(
                 "project_mode": True,
                 "preview_writes": True,
                 "comment_workflows": workflow_service is not None,
+                "source_status": source_store is not None,
             },
         }
 
@@ -329,6 +405,45 @@ def create_copilot_router(
             llm_client=llm_client,
             system_prompt=str(project.get("system_prompt") or "") if project else "",
         )
+
+    @router.get("/sources")
+    async def list_sources(request: Request, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        _check_rate_limit(request)
+        if source_store is None:
+            raise HTTPException(status_code=503, detail="Source store unavailable")
+        safe_limit = max(1, min(int(limit), 200))
+        safe_offset = max(0, int(offset))
+        result = await source_store.list_sources(limit=safe_limit, offset=safe_offset)
+        rows = result.get("sources", []) if isinstance(result, dict) else []
+        return {
+            "total": int(result.get("total", len(rows))) if isinstance(result, dict) else len(rows),
+            "limit": safe_limit,
+            "offset": safe_offset,
+            # List view omits the canonical markdown hash to avoid an N+1 lookup;
+            # it is included in the per-source detail endpoint.
+            "sources": [source_status_from_row(row, None) for row in rows],
+        }
+
+    @router.get("/sources/{source_id}")
+    async def get_source_status(request: Request, source_id: str) -> dict[str, Any]:
+        _check_rate_limit(request)
+        if source_store is None:
+            raise HTTPException(status_code=503, detail="Source store unavailable")
+        row = await source_store.get_source(source_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        package = await source_store.get_markdown_package(source_id)
+        return source_status_from_row(row, package)
+
+    @router.post("/sources/{source_id}/retry")
+    async def retry_source(request: Request, source_id: str) -> dict[str, Any]:
+        _check_rate_limit(request)
+        if source_retry_handler is None:
+            raise HTTPException(status_code=503, detail="Source retry unavailable")
+        result = await source_retry_handler(source_id)
+        if isinstance(result, dict) and result.get("not_found"):
+            raise HTTPException(status_code=404, detail="Source not found")
+        return result
 
     @router.post("/dossiers/generate")
     async def generate_dossier(request: Request, payload: DossierGenerateRequest) -> dict[str, Any]:

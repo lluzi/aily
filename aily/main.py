@@ -1086,6 +1086,18 @@ async def _source_worker_loop(worker_id: str) -> None:
     logger.info("Source worker %s stopped", worker_id)
 
 
+async def _copilot_retry_source(source_id: str) -> dict[str, Any]:
+    """Copilot-facing retry: look up the source, then re-enqueue it.
+
+    Returns ``{"not_found": True}`` when the source id is unknown so the router
+    can surface a 404.
+    """
+    source = await source_store.get_source(source_id)
+    if source is None:
+        return {"not_found": True, "source_id": source_id}
+    return await _retry_source(source)
+
+
 async def _retry_source(source: dict[str, Any]) -> dict[str, Any]:
     source_id = str(source.get("source_id") or "")
     previous_status = str(source.get("status") or "")
@@ -2589,6 +2601,8 @@ app.include_router(
         rate_limiter=ui_rate_limiter,
         trust_proxy_headers=SETTINGS.trusted_proxy_headers,
         workflow_run_store=workflow_run_store,
+        source_store=source_store,
+        source_retry_handler=_copilot_retry_source,
     )
 )
 app.include_router(
