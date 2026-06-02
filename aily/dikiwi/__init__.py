@@ -5,13 +5,6 @@ Active runtime:
 - Institutional review gates (门下省 Menxia, CVO)
 - Stage agents used by `DikiwiMind`
 
-Experimental packages still shipped in-tree:
-- `aily.dikiwi.skills`
-- `aily.dikiwi.memorials`
-
-Those experimental packages are available for tests and future work, but they
-are not part of the active production path described in the current docs.
-
 Usage:
     from aily.dikiwi import DikiwiOrchestrator, PipelineConfig
 
@@ -41,12 +34,6 @@ from aily.dikiwi.gates import (
     ReviewDecision,
     ReviewDecisionType,
 )
-from aily.dikiwi.memorials import (
-    GraphDBMemorialStore,
-    Memorial,
-    MemorialDecisionType,
-    ObsidianMemorialStore,
-)
 from aily.dikiwi.orchestrator import (
     DikiwiOrchestrator,
     PipelineConfig,
@@ -55,14 +42,6 @@ from aily.dikiwi.orchestrator import (
 from aily.dikiwi.incremental_orchestrator import (
     IncrementalOrchestrator,
     IncrementalResult,
-)
-from aily.dikiwi.skills import (
-    Skill,
-    SkillContext,
-    SkillMetadata,
-    SkillRegistry,
-    SkillResult,
-    get_skill_registry,
 )
 from aily.dikiwi.stages import (
     DikiwiStage,
@@ -122,18 +101,6 @@ __all__ = [
     "ApprovalDecision",
     "ApprovalDecisionType",
     "PendingApproval",
-    # Skills
-    "Skill",
-    "SkillContext",
-    "SkillResult",
-    "SkillMetadata",
-    "SkillRegistry",
-    "get_skill_registry",
-    # Memorials
-    "Memorial",
-    "MemorialDecisionType",
-    "GraphDBMemorialStore",
-    "ObsidianMemorialStore",
     # Agents
     "DikiwiAgent",
     "AgentContext",
