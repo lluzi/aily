@@ -1,22 +1,16 @@
-"""Gating system for Aily information flow.
+"""Input drop model for Aily.
 
-Hydrological Architecture:
-- Rain (inputs): All incoming information
-- Streams (channels): Content type routing
-- Reservoir (buffer): Accumulation and enrichment
-- Dam (gates): Quality/confidence thresholds
-- Rivers (outputs): Controlled flow to destinations
+Only the durable ``RainDrop`` intake model remains from the original
+hydrological design; the reservoir/dam/channel flow machinery was never
+wired into the live runtime and has been removed.
 """
 
-from .drainage import DrainageSystem
-from .reservoir import ContentReservoir
-from .dam import InsightDam
-from .channels import InputChannel, OutputChannel
+from .drainage import DrainageSystem, RainDrop, RainType, Stream, StreamType
 
 __all__ = [
     "DrainageSystem",
-    "ContentReservoir",
-    "InsightDam",
-    "InputChannel",
-    "OutputChannel",
+    "RainDrop",
+    "RainType",
+    "Stream",
+    "StreamType",
 ]

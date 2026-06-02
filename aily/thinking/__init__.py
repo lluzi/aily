@@ -1,45 +1,12 @@
-"""ARMY OF TOP MINDS - Multi-agent thinking system for Aily.
+"""Thinking configuration.
 
-This module provides parallel analysis using TRIZ, McKinsey, and GStack frameworks
-to transform raw knowledge into compelling, insight-rich outputs.
+The multi-framework "army of minds" thinking system (TRIZ/SCAMPER/etc.) drove
+the removed autonomous Reactor/Entrepreneur engines and is no longer part of the
+live product. Only the configuration model is retained.
 """
 
-from aily.thinking.models import (
-    FrameworkType,
-    InsightPriority,
-    KnowledgePayload,
-    FrameworkInsight,
-    SynthesizedInsight,
-    ThinkingResult,
-    Contradiction,
-    PrincipleRecommendation,
-    EvolutionAnalysis,
-    MeceStructure,
-    HypothesisTree,
-    FrameworkApplication,
-    PMFAnalysis,
-    ShippingAssessment,
-    GrowthLoop,
-)
 from aily.thinking.config import ThinkingConfig
-from aily.thinking.integration import ThinkingLLMClient
 
 __all__ = [
-    "FrameworkType",
-    "InsightPriority",
-    "KnowledgePayload",
-    "FrameworkInsight",
-    "SynthesizedInsight",
-    "ThinkingResult",
-    "Contradiction",
-    "PrincipleRecommendation",
-    "EvolutionAnalysis",
-    "MeceStructure",
-    "HypothesisTree",
-    "FrameworkApplication",
-    "PMFAnalysis",
-    "ShippingAssessment",
-    "GrowthLoop",
     "ThinkingConfig",
-    "ThinkingLLMClient",
 ]
