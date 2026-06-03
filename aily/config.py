@@ -73,6 +73,21 @@ class Settings(BaseSettings):
     dikiwi_higher_order_max_contexts: int = 3
     mineru_batch_extract_concurrency: int = 4
     entrepreneur_evaluation_timeout_minutes: int = 3
+
+    # Higher-order synthesis (Insight/Wisdom/Impact) detection. Detection is
+    # automatic and cheap; it only RECOMMENDS ripe topics into a candidate
+    # queue. Generation stays approval-gated. Two triggers feed one queue:
+    # a daily routine (slow-drip catcher) and a knowledge-growth threshold
+    # (burst responder). Volume is a wake-up signal, not a quality signal — the
+    # readiness score (dikiwi_network_trigger_score) still decides what's ripe.
+    synthesis_detection_enabled: bool = True
+    synthesis_daily_hour: int = 7
+    synthesis_daily_minute: int = 0
+    # Run the threshold detector once this many new Knowledge nodes have
+    # accumulated since the last detection pass.
+    synthesis_knowledge_growth_threshold: int = 15
+    # Don't re-raise a candidate the user dismissed for this many hours.
+    synthesis_candidate_cooldown_hours: int = 72
     kimi_api_key: str = ""
     kimi_model: str = "kimi-k2.6"
     kimi_vision_model: str = "kimi-k2.6"
@@ -156,6 +171,10 @@ class Settings(BaseSettings):
     @property
     def source_store_db_path(self) -> Path:
         return self.aily_data_dir / "source_store.db"
+
+    @property
+    def synthesis_candidate_db_path(self) -> Path:
+        return self.aily_data_dir / "synthesis_candidates.db"
 
     @property
     def source_object_dir(self) -> Path:
