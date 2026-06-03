@@ -5,6 +5,7 @@ import importlib.util
 import logging
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,7 @@ browser_manager_instance = None
 ui_upload_tasks: dict[str, asyncio.Task[Any]] = {}
 source_worker_tasks: list[asyncio.Task[Any]] = []
 source_worker_stop: asyncio.Event | None = None
+synthesis_detection_task: asyncio.Task[Any] | None = None
 inbox_watcher: WatchedInboxService | None = None
 workflow_tasks: dict[str, asyncio.Task[Any]] = {}
 ui_upload_semaphore = asyncio.Semaphore(max(1, SETTINGS.ui_upload_concurrency))
@@ -2419,11 +2421,49 @@ def _validate_runtime_security_config() -> None:
         raise RuntimeError("; ".join(errors))
 
 
+async def _synthesis_detection_loop(stop_event: asyncio.Event) -> None:
+    """Automatic, cheap detection: enqueue ripe synthesis candidates.
+
+    Two triggers feed the one candidate queue: a knowledge-growth threshold
+    (burst responder, checked each tick) and a daily routine (slow-drip catcher).
+    Generation stays approval-gated — this only recommends.
+    """
+    from aily.synthesis import SynthesisDetector
+
+    detector = SynthesisDetector(
+        graph_db,
+        synthesis_store,
+        trigger_score=SETTINGS.dikiwi_network_trigger_score,
+        min_nodes=SETTINGS.dikiwi_network_min_nodes,
+        max_candidate_nodes=SETTINGS.dikiwi_network_max_candidate_nodes,
+    )
+    tick_seconds = 300.0
+    last_daily_date = None
+    while not stop_event.is_set():
+        try:
+            if await detector.should_run_threshold(SETTINGS.synthesis_knowledge_growth_threshold):
+                await detector.detect(detected_via="threshold")
+            now = datetime.now()
+            due = (now.hour, now.minute) >= (SETTINGS.synthesis_daily_hour, SETTINGS.synthesis_daily_minute)
+            if due and last_daily_date != now.date():
+                await detector.detect(detected_via="daily")
+                last_daily_date = now.date()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[SYNTHESIS] detection loop error")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=tick_seconds)
+        except TimeoutError:
+            continue
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global dikiwi_mind
     global browser_manager_instance
     global source_worker_stop, source_worker_tasks, inbox_watcher
+    global synthesis_detection_task
     _validate_runtime_security_config()
     await db.initialize()
     await graph_db.initialize()
@@ -2489,6 +2529,11 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_source_worker_loop(f"source-worker-{index + 1}"))
         for index in range(max(0, int(SETTINGS.source_worker_count)))
     ]
+    if SETTINGS.synthesis_detection_enabled:
+        synthesis_detection_task = asyncio.create_task(
+            _synthesis_detection_loop(source_worker_stop)
+        )
+        logger.info("Synthesis detection loop started (recommend-only, approval-gated)")
     if SETTINGS.inbox_watcher_enabled:
         inbox_watcher = WatchedInboxService(
             source_store=source_store,
@@ -2504,6 +2549,10 @@ async def lifespan(app: FastAPI):
     yield
     if source_worker_stop:
         source_worker_stop.set()
+    if synthesis_detection_task is not None:
+        synthesis_detection_task.cancel()
+        await asyncio.gather(synthesis_detection_task, return_exceptions=True)
+        synthesis_detection_task = None
     for task in workflow_tasks.values():
         task.cancel()
     if workflow_tasks:
