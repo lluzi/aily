@@ -9,9 +9,12 @@ from aily.synthesis.candidates import (
     SynthesisCandidateStore,
     candidate_id_for_nodes,
 )
+from aily.synthesis.detector import SynthesisDetector, subgraphs_to_candidates
 
 __all__ = [
     "SynthesisCandidate",
     "SynthesisCandidateStore",
+    "SynthesisDetector",
     "candidate_id_for_nodes",
+    "subgraphs_to_candidates",
 ]

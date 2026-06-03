@@ -95,7 +95,25 @@ class SynthesisCandidateStore:
             )
             """
         )
+        await self._db.execute(
+            "CREATE TABLE IF NOT EXISTS synthesis_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
         await self._db.commit()
+
+    async def get_meta(self, key: str, default: str = "") -> str:
+        db = self._check()
+        cursor = await db.execute("SELECT value FROM synthesis_meta WHERE key=?", (key,))
+        row = await cursor.fetchone()
+        return row["value"] if row else default
+
+    async def set_meta(self, key: str, value: str) -> None:
+        db = self._check()
+        await db.execute(
+            "INSERT INTO synthesis_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)),
+        )
+        await db.commit()
 
     async def close(self) -> None:
         if self._db is not None:
