@@ -48,6 +48,7 @@ class ContentTypeDetector:
         ".doc": "application/msword",
         ".html": "text/html",
         ".htm": "text/html",
+        ".eml": "message/rfc822",
     }
 
     @classmethod

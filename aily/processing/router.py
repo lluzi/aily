@@ -18,6 +18,7 @@ from aily.processing.processors import (
     ContentProcessor,
     CSVProcessor,
     DocxProcessor,
+    EmailProcessor,
     ExtractedContent,
     ImageProcessor,
     MarkdownProcessor,
@@ -163,6 +164,7 @@ class ProcessingRouter:
             DocxProcessor(),
             CSVProcessor(),
             XLSXProcessor(),
+            EmailProcessor(),
             WebProcessor(browser_manager=self.browser_manager),
             TextProcessor(),  # Fallback for text/*
         ]

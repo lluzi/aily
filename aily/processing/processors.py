@@ -604,3 +604,122 @@ class XLSXProcessor(ContentProcessor):
                 text=f"[XLSX extraction failed: {e}]",
                 source_type="xlsx",
             )
+
+
+class EmailProcessor(ContentProcessor):
+    """Extract readable Markdown from email files (.eml / message/rfc822).
+
+    Emails dropped into the inbox as files are parsed into a header block plus
+    the message body (preferring text/plain, falling back to stripped HTML) and
+    an attachment list, so they flow through the same source pipeline as any
+    other document.
+    """
+
+    SUPPORTED_TYPES = ["message/rfc822"]
+
+    async def process(self, data: bytes, filename: str | None = None) -> ExtractedContent:
+        from email import policy
+        from email.parser import BytesParser
+
+        try:
+            message = BytesParser(policy=policy.default).parsebytes(data)
+        except Exception as e:
+            logger.exception("Email parse failed")
+            return ExtractedContent(
+                text=f"[Email parse failed: {e}]",
+                title=_get_title_from_filename(filename),
+                source_type="email",
+            )
+
+        subject = str(message.get("subject", "") or "").strip()
+        sender = str(message.get("from", "") or "").strip()
+        recipient = str(message.get("to", "") or "").strip()
+        date = str(message.get("date", "") or "").strip()
+        body, body_format = self._extract_body(message)
+        attachments = self._attachment_names(message)
+
+        def _yaml(value: str) -> str:
+            return value.replace('"', "'")
+
+        header = ["---", "source_type: email"]
+        if subject:
+            header.append(f'subject: "{_yaml(subject)}"')
+        if sender:
+            header.append(f'from: "{_yaml(sender)}"')
+        if recipient:
+            header.append(f'to: "{_yaml(recipient)}"')
+        if date:
+            header.append(f'date: "{_yaml(date)}"')
+        header.append("---")
+
+        parts = ["\n".join(header), "", f"# {subject or 'Email'}"]
+        meta = " · ".join(p for p in [f"From: {sender}" if sender else "", f"Date: {date}" if date else ""] if p)
+        if meta:
+            parts += ["", f"*{meta}*"]
+        parts += ["", body.strip() or "[No readable body]"]
+        if attachments:
+            parts += ["", "## Attachments", *[f"- {name}" for name in attachments]]
+
+        return ExtractedContent(
+            text="\n".join(parts).strip(),
+            title=subject or _get_title_from_filename(filename),
+            source_type="email",
+            metadata={
+                "filename": filename,
+                "subject": subject,
+                "from": sender,
+                "to": recipient,
+                "date": date,
+                "attachments": attachments,
+                "body_format": body_format,
+            },
+        )
+
+    @staticmethod
+    def _extract_body(message) -> tuple[str, str]:
+        """Return (body, format) preferring text/plain, else stripped HTML."""
+        plain: str | None = None
+        html: str | None = None
+        for part in message.walk():
+            if part.is_multipart():
+                continue
+            if "attachment" in str(part.get("Content-Disposition", "") or "").lower():
+                continue
+            try:
+                content = part.get_content()
+            except Exception:
+                continue
+            if not isinstance(content, str):
+                continue
+            content_type = part.get_content_type()
+            if content_type == "text/plain" and plain is None:
+                plain = content
+            elif content_type == "text/html" and html is None:
+                html = content
+        if plain:
+            return plain, "plain"
+        if html:
+            return EmailProcessor._html_to_text(html), "html"
+        return "", "none"
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        try:
+            from bs4 import BeautifulSoup
+
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup(["script", "style"]):
+                tag.decompose()
+            return soup.get_text("\n").strip()
+        except Exception:
+            return re.sub(r"<[^>]+>", " ", html).strip()
+
+    @staticmethod
+    def _attachment_names(message) -> list[str]:
+        names: list[str] = []
+        for part in message.walk():
+            if "attachment" in str(part.get("Content-Disposition", "") or "").lower():
+                name = part.get_filename()
+                if name:
+                    names.append(name)
+        return names
