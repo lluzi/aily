@@ -44,7 +44,10 @@ class Settings(BaseSettings):
     feishu_encrypt_key: str = ""
     obsidian_rest_api_key: str = ""
     obsidian_vault_path: str = ""
-    dikiwi_vault_path: str = "/Users/luzi/Library/Mobile Documents/com~apple~CloudDocs/Documents/aily"
+    # Vault location must be configured explicitly (OBSIDIAN_VAULT_PATH or
+    # DIKIWI_VAULT_PATH). No default path is assumed; /ready reports loudly when
+    # it is missing or does not exist.
+    dikiwi_vault_path: str = ""
     obsidian_rest_api_port: int = 27123
     llm_provider: str = "kimi"
     llm_api_key: str = ""
@@ -290,6 +293,23 @@ class Settings(BaseSettings):
                     "and AILY_DIKIWI_ENABLED=true"
                 )
         return errors
+
+    @property
+    def active_llm_key(self) -> str:
+        """Resolved API key for the active LLM provider (empty if unset)."""
+        provider = self.llm_provider.lower().strip()
+        provider_keys = {
+            "kimi": self.kimi_api_key or self.llm_api_key,
+            "moonshot": self.kimi_api_key or self.llm_api_key,
+            "deepseek": self.deepseek_api_key or self.llm_api_key,
+            "zhipu": self.zhipu_api_key or self.llm_api_key,
+        }
+        return str(provider_keys.get(provider, self.llm_api_key) or "").strip()
+
+    @property
+    def resolved_vault_path(self) -> str:
+        """Configured vault path (obsidian preferred, then dikiwi), or empty."""
+        return str(self.obsidian_vault_path or self.dikiwi_vault_path or "").strip()
 
 
 SETTINGS = Settings()

@@ -2585,11 +2585,31 @@ async def health() -> dict[str, Any]:
 
 @app.get("/ready", include_in_schema=False)
 async def ready() -> dict[str, Any]:
+    issues: list[str] = []
+    vault = SETTINGS.resolved_vault_path
+    if not vault:
+        issues.append("No vault configured. Set OBSIDIAN_VAULT_PATH (or DIKIWI_VAULT_PATH).")
+    elif not Path(vault).expanduser().exists():
+        issues.append(f"Vault path does not exist: {vault}")
+    llm_key_configured = bool(SETTINGS.active_llm_key)
+    if SETTINGS.minds.dikiwi_enabled and not llm_key_configured:
+        issues.append(
+            f"No LLM API key configured for provider '{SETTINGS.llm_provider}'. "
+            "Set LLM_API_KEY or the provider-specific key (e.g. KIMI_API_KEY) — "
+            "required for the Data/Information/Knowledge pipeline."
+        )
+    issues.extend(SETTINGS.validate_runtime_security())
     return {
-        "status": "ready",
+        "status": "ready" if not issues else "not_ready",
+        "ready": not issues,
+        "issues": issues,
+        "vault_path": vault,
+        "vault_configured": bool(vault),
+        "llm_provider": SETTINGS.llm_provider,
+        "llm_key_configured": llm_key_configured,
+        "inbox_path": str(SETTINGS.resolved_inbox_path),
         "graph_db_configured": bool(SETTINGS.graph_db_path),
         "source_store_configured": bool(SETTINGS.source_store_db_path),
-        "vault_configured": bool(SETTINGS.obsidian_vault_path or SETTINGS.dikiwi_vault_path),
         "studio_auth_required": SETTINGS.hosted_mode or SETTINGS.ui_auth_enabled,
     }
 
