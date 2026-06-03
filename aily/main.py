@@ -57,6 +57,7 @@ from aily.orchestration.source_foundation_graph import (
     build_source_foundation_graph,
 )
 from aily.source_store import SourceJobCapacityError, SourceStore
+from aily.synthesis import SynthesisCandidateStore
 from aily.ui.events import emit_ui_event, ui_event_hub
 from aily.ui.router import create_ui_router
 from aily.verify.run_registry import RunRegistry
@@ -77,6 +78,7 @@ source_store = SourceStore(
 )
 workflow_run_store = WorkflowRunStore(SETTINGS.workflow_runs_db_path)
 chat_store = ChatStore(SETTINGS.chat_store_db_path)
+synthesis_store = SynthesisCandidateStore(SETTINGS.synthesis_candidate_db_path)
 research_store = ResearchStore(SETTINGS.research_store_db_path)
 business_plan_store = BusinessPlanStore(SETTINGS.business_plan_store_db_path)
 fetcher = BrowserFetcher()
@@ -2428,6 +2430,7 @@ async def lifespan(app: FastAPI):
     await source_store.initialize()
     await workflow_run_store.initialize()
     await chat_store.initialize()
+    await synthesis_store.initialize()
     await research_store.initialize()
     await business_plan_store.initialize()
     ui_event_hub.configure_persistence(SETTINGS.ui_event_log_path)
@@ -2516,6 +2519,7 @@ async def lifespan(app: FastAPI):
         source_worker_tasks = []
     await business_plan_store.close()
     await research_store.close()
+    await synthesis_store.close()
     await chat_store.close()
     await workflow_run_store.close()
     await source_store.close()
@@ -2623,6 +2627,8 @@ app.include_router(
         workflow_run_store=workflow_run_store,
         source_store=source_store,
         source_retry_handler=_copilot_retry_source,
+        synthesis_store=synthesis_store,
+        candidate_cooldown_hours=SETTINGS.synthesis_candidate_cooldown_hours,
     )
 )
 app.include_router(

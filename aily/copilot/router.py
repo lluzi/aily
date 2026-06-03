@@ -218,6 +218,9 @@ def create_copilot_router(
     workflow_run_store: WorkflowRunStore | None = None,
     source_store: Any | None = None,
     source_retry_handler: Callable[[str], Any] | None = None,
+    synthesis_store: Any | None = None,
+    candidate_generate_handler: Callable[[str], Any] | None = None,
+    candidate_cooldown_hours: int = 72,
 ) -> APIRouter:
     vault = vault_path.expanduser().resolve()
     state_root = (state_dir or SETTINGS.aily_data_dir).expanduser().resolve()
@@ -298,6 +301,7 @@ def create_copilot_router(
                 "preview_writes": True,
                 "comment_workflows": workflow_service is not None,
                 "source_status": source_store is not None,
+                "synthesis_detection": synthesis_store is not None,
             },
         }
 
@@ -444,6 +448,44 @@ def create_copilot_router(
         if isinstance(result, dict) and result.get("not_found"):
             raise HTTPException(status_code=404, detail="Source not found")
         return result
+
+    @router.get("/candidates")
+    async def list_candidates(request: Request, status: str = "pending", limit: int = 50) -> dict[str, Any]:
+        """Synthesis candidates: ripe topics recommended for approval-gated I/W/I."""
+        _check_rate_limit(request)
+        if synthesis_store is None:
+            raise HTTPException(status_code=503, detail="Synthesis detection unavailable")
+        safe_status = status if status in {"pending", "approved", "dismissed", "stale", "generated"} else None
+        candidates = await synthesis_store.list(status=safe_status, limit=limit)
+        return {"total": len(candidates), "status": safe_status, "candidates": candidates}
+
+    @router.post("/candidates/{candidate_id}/approve")
+    async def approve_candidate(request: Request, candidate_id: str) -> dict[str, Any]:
+        """Approve a candidate; generation (I/W/I) runs only after this explicit step."""
+        _check_rate_limit(request)
+        if synthesis_store is None:
+            raise HTTPException(status_code=503, detail="Synthesis detection unavailable")
+        existing = await synthesis_store.get(candidate_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        updated = await synthesis_store.set_status(candidate_id, "approved")
+        generation: dict[str, Any] | None = None
+        if candidate_generate_handler is not None:
+            generation = await candidate_generate_handler(candidate_id)
+        return {"candidate": updated, "generation": generation}
+
+    @router.post("/candidates/{candidate_id}/dismiss")
+    async def dismiss_candidate(request: Request, candidate_id: str) -> dict[str, Any]:
+        _check_rate_limit(request)
+        if synthesis_store is None:
+            raise HTTPException(status_code=503, detail="Synthesis detection unavailable")
+        existing = await synthesis_store.get(candidate_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Candidate not found")
+        updated = await synthesis_store.set_status(
+            candidate_id, "dismissed", cooldown_hours=candidate_cooldown_hours
+        )
+        return {"candidate": updated}
 
     @router.post("/dossiers/generate")
     async def generate_dossier(request: Request, payload: DossierGenerateRequest) -> dict[str, Any]:
