@@ -182,6 +182,21 @@ class PrimaryLLMRoute:
             return getattr(settings, "deepseek_api_key", "") or getattr(settings, "llm_api_key", "")
         raise ValueError(f"Unsupported provider={provider!r} for API key resolution.")
 
+    @staticmethod
+    def _provider_specific_key(settings: Any, provider: str) -> str:
+        """Provider-specific key only (no shared llm_api_key fallback).
+
+        Used to decide whether a workload's preferred provider is genuinely
+        configured. The shared llm_api_key belongs to the configured provider,
+        so it must not make a *different* provider look keyed.
+        """
+        normalized = str(provider).strip().lower()
+        if normalized == "kimi":
+            return str(getattr(settings, "kimi_api_key", "") or "")
+        if normalized == "deepseek":
+            return str(getattr(settings, "deepseek_api_key", "") or "")
+        return ""
+
     @classmethod
     def resolve_route(
         cls,
@@ -263,6 +278,30 @@ class PrimaryLLMRoute:
         api_key = cls._api_key_for_provider(settings, resolved_provider)
         if "api_key" in applied_override:
             api_key = str(applied_override["api_key"])
+
+        # Single-provider fallback: if the workload's preferred provider has no
+        # key configured, fall back to the globally-configured provider (which
+        # does). This lets a user with only one provider key run every stage
+        # without hand-editing per-workload routes. Vision workloads are exempt
+        # because they genuinely require a vision-capable provider.
+        if (
+            not str(cls._provider_specific_key(settings, resolved_provider)).strip()
+            and "api_key" not in applied_override
+            and resolved_provider != provider
+            and not str(workload).startswith("chaos.vision")
+        ):
+            fallback_key = cls._api_key_for_provider(settings, provider)
+            if str(fallback_key).strip():
+                fallback_default = cls._default_route_for_provider(provider)
+                provider_model = getattr(settings, f"{provider}_model", "")
+                resolved_provider = provider
+                resolved_model = (
+                    provider_model
+                    or getattr(settings, "llm_model", "")
+                    or fallback_default.model
+                )
+                resolved_base_url = getattr(settings, "llm_base_url", "") or fallback_default.base_url
+                api_key = fallback_key
 
         return ResolvedLLMRoute(
             workload=workload,
