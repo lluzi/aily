@@ -1090,6 +1090,45 @@ async def _source_worker_loop(worker_id: str) -> None:
     logger.info("Source worker %s stopped", worker_id)
 
 
+async def _run_candidate_generation(candidate_id: str, node_ids: list[str], label: str, workflow_run_id: str) -> None:
+    """Background task: run approved Insight→Wisdom→Impact over a candidate scope."""
+    try:
+        if dikiwi_mind is None:
+            await synthesis_store.set_status(candidate_id, "approved")
+            return
+        result = await dikiwi_mind.process_triggered_iwi(
+            motive=label or "approved synthesis candidate",
+            workflow_run_id=workflow_run_id,
+            node_ids=node_ids,
+        )
+        succeeded = any(getattr(r, "success", False) for r in getattr(result, "stage_results", []))
+        await synthesis_store.set_status(
+            candidate_id, "generated" if succeeded else "approved", workflow_run_id=workflow_run_id
+        )
+        logger.info("[SYNTHESIS] generation for %s -> success=%s", candidate_id, succeeded)
+    except Exception:
+        logger.exception("[SYNTHESIS] candidate generation failed for %s", candidate_id)
+        await synthesis_store.set_status(candidate_id, "approved", workflow_run_id=workflow_run_id)
+
+
+async def _copilot_generate_from_candidate(candidate_id: str) -> dict[str, Any]:
+    """Approval hook: kick off generation for an approved candidate in the background.
+
+    Generation (Insight/Wisdom/Impact) is slow, so we return immediately with a
+    workflow_run_id; the candidate transitions to 'generated' when it completes.
+    """
+    candidate = await synthesis_store.get(candidate_id)
+    if candidate is None:
+        return {"not_found": True, "candidate_id": candidate_id}
+    workflow_run_id = f"wf_cand_{candidate_id}"
+    node_ids = candidate.get("node_ids") or []
+    task = asyncio.create_task(
+        _run_candidate_generation(candidate_id, node_ids, candidate.get("scope_label") or "", workflow_run_id)
+    )
+    workflow_tasks[workflow_run_id] = task
+    return {"workflow_run_id": workflow_run_id, "status": "started", "node_count": len(node_ids)}
+
+
 async def _copilot_retry_source(source_id: str) -> dict[str, Any]:
     """Copilot-facing retry: look up the source, then re-enqueue it.
 
@@ -2677,6 +2716,7 @@ app.include_router(
         source_store=source_store,
         source_retry_handler=_copilot_retry_source,
         synthesis_store=synthesis_store,
+        candidate_generate_handler=_copilot_generate_from_candidate,
         candidate_cooldown_hours=SETTINGS.synthesis_candidate_cooldown_hours,
     )
 )
