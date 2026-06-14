@@ -24,6 +24,21 @@ def test_source_status_mapping_completed():
     assert st["artifact_paths"] == ["/p.md"]
 
 
+def test_source_status_mapping_completed_empty():
+    # A source that produced zero notes must read as 'empty/review', not a clean
+    # done — and must surface why.
+    row = {
+        "source_id": "u", "kind": "upload", "status": "completed_empty",
+        "metadata": {"empty_reason": "too little extractable text (image-only PDF)"},
+        "normalized_source": "deck.pdf", "sha256": "h", "updated_at": "t",
+    }
+    st = source_status_from_row(row, None)
+    assert st["conversion_status"] == "empty"
+    assert st["next_action"] == "review"
+    assert st["stages"] == {"data": "empty", "information": "empty", "knowledge": "empty"}
+    assert "image-only" in st["last_error"]
+
+
 def test_source_status_mapping_failed():
     row = {
         "source_id": "u", "kind": "upload", "status": "failed",

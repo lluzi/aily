@@ -76,6 +76,7 @@ class SynthesisCandidateStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute(
             """
             CREATE TABLE IF NOT EXISTS synthesis_candidates (

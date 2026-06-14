@@ -214,13 +214,18 @@ class Settings(BaseSettings):
 
     @property
     def resolved_inbox_path(self) -> Path:
-        """Canonical in-vault drop zone.
+        """Canonical drop zone the watcher monitors.
 
-        When a vault is configured, the inbox lives inside it at
-        ``<vault>/00-Chaos/_inbox`` so it syncs with the vault and is reachable
-        on mobile. Falls back to the standalone ``inbox_path`` when no vault is
-        set.
+        Precedence:
+        1. An explicitly-set ``INBOX_PATH`` always wins — this is how the
+           cloud-drop model works (point it at e.g. ~/Dropbox/Aily-Inbox synced
+           onto the home server).
+        2. Otherwise, when a vault is configured, the inbox lives inside it at
+           ``<vault>/00-Chaos/_inbox`` so it syncs with the vault.
+        3. Otherwise the default standalone ``inbox_path``.
         """
+        if "inbox_path" in self.model_fields_set:
+            return self.inbox_path.expanduser()
         vault = (self.obsidian_vault_path or self.dikiwi_vault_path or "").strip()
         if vault:
             return Path(vault).expanduser() / "00-Chaos" / "_inbox"

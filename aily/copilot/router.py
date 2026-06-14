@@ -148,6 +148,8 @@ def _stage_states(status: str, has_markdown: bool) -> dict[str, str]:
     """
     if status in _FAILED_STATUSES:
         return {"data": "failed", "information": "failed", "knowledge": "failed"}
+    if status == "completed_empty":
+        return {"data": "empty", "information": "empty", "knowledge": "empty"}
     if status in _DONE_STATUSES:
         return {"data": "done", "information": "done", "knowledge": "done"}
     if status in {"processing"}:
@@ -160,6 +162,8 @@ def _stage_states(status: str, has_markdown: bool) -> dict[str, str]:
 def _next_action(status: str) -> str:
     if status in _FAILED_STATUSES:
         return "retry"
+    if status == "completed_empty":
+        return "review"
     if status in _DONE_STATUSES:
         return "none"
     if status in _PENDING_STATUSES or status == "processing":
@@ -182,11 +186,16 @@ def source_status_from_row(row: dict[str, Any], package: dict[str, Any] | None) 
     )
     if status in _FAILED_STATUSES:
         conversion_status = "failed"
+    elif status == "completed_empty":
+        conversion_status = "empty"
     elif has_markdown or status in {"extracted", "processing", "completed"}:
         conversion_status = "done"
     else:
         conversion_status = "pending"
-    last_error = str(metadata.get("retry_error") or metadata.get("error") or "") or None
+    last_error = (
+        str(metadata.get("retry_error") or metadata.get("error") or metadata.get("empty_reason") or "")
+        or None
+    )
     return {
         "source_id": str(row.get("source_id") or ""),
         "display_title": title,

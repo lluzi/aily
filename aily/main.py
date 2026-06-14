@@ -123,6 +123,36 @@ def _retry_delay_for_attempt(attempt_count: int) -> float:
     return min(cap, base * (2 ** max(0, attempt_count - 1)))
 
 
+def _terminal_status_for_result(result: Any) -> tuple[str, dict[str, Any]]:
+    """Decide the honest terminal status for a finished ingestion.
+
+    A source that produced zero notes (e.g. the DATA quality gate rejected thin
+    or image-only content) must NOT be reported as a clean 'completed' — that
+    hides failure. It becomes 'completed_empty' with a human-readable reason so
+    the user can see *why* nothing landed.
+    """
+    stage_results = getattr(result, "stage_results", []) or []
+    total_output = sum(int(getattr(r, "items_output", 0) or 0) for r in stage_results)
+    meta: dict[str, Any] = {
+        "pipeline_id": getattr(result, "pipeline_id", ""),
+        "final_stage": result.final_stage_reached.name if getattr(result, "final_stage_reached", None) else "",
+    }
+    if total_output > 0:
+        return "completed", meta
+    reason = ""
+    for r in stage_results:
+        data = getattr(r, "data", {}) or {}
+        if data.get("quality_assessment") == "low":
+            reason = str(data.get("quality_reason") or "")
+            break
+    meta["empty_reason"] = (
+        reason
+        or "No notes were produced — the source had too little extractable text "
+        "(image-only PDFs need a vision model)."
+    )
+    return "completed_empty", meta
+
+
 def _is_retryable_processing_error(message: str) -> bool:
     lowered = (message or "").lower()
     retry_markers = (
@@ -596,14 +626,8 @@ async def _process_ui_upload(
             )
             await source_store.update_status(source_id, "processing")
             result = await _process_dikiwi_ingestion(drop)
-            await source_store.update_status(
-                source_id,
-                "completed",
-                {
-                    "pipeline_id": result.pipeline_id,
-                    "final_stage": result.final_stage_reached.name if result.final_stage_reached else "",
-                },
-            )
+            terminal_status, terminal_meta = _terminal_status_for_result(result)
+            await source_store.update_status(source_id, terminal_status, terminal_meta)
             await emit_ui_event(
                 "source_ingest_completed",
                 upload_id=upload_id,
@@ -802,18 +826,14 @@ async def _process_upload_source_job(job: dict[str, Any]) -> str:
         )
         return "failed"
 
+    terminal_status, terminal_meta = _terminal_status_for_result(result)
     await source_store.update_status(
         source_id,
-        "completed",
-        {
-            "job_id": job.get("job_id"),
-            "batch_id": batch_id,
-            "pipeline_id": result.pipeline_id,
-            "final_stage": result.final_stage_reached.name if result.final_stage_reached else "",
-        },
+        terminal_status,
+        {"job_id": job.get("job_id"), "batch_id": batch_id, **terminal_meta},
     )
     await emit_ui_event(
-        "source_ingest_completed",
+        "source_ingest_completed" if terminal_status == "completed" else "source_ingest_empty",
         job_id=job.get("job_id"),
         upload_id=upload_id,
         source_id=source_id,
@@ -2507,6 +2527,14 @@ async def lifespan(app: FastAPI):
     await db.initialize()
     await graph_db.initialize()
     await source_store.initialize()
+    # Cold-start recovery: requeue any source jobs left 'running' by a prior
+    # crash/reboot so they don't stall until the stale-lock timeout.
+    try:
+        recovered = await source_store.requeue_stale_running_source_jobs(stale_after_seconds=0)
+        if recovered:
+            logger.info("Cold-start recovered %d stranded source job(s)", recovered)
+    except Exception:
+        logger.exception("Cold-start source-job recovery failed")
     await workflow_run_store.initialize()
     await chat_store.initialize()
     await synthesis_store.initialize()
