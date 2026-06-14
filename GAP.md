@@ -2,6 +2,31 @@
 
 _Audit date: 2026-06-04. Branch: `refocus/knowledge-refinery`._
 
+## ✅ Resolution (closed 2026-06-14)
+
+All blockers, majors, and P2 polish below have been closed and verified
+(55 passing tests + an integrated boot). Highlights:
+
+| Gap | Status | How |
+|-----|--------|-----|
+| B1 no service | ✅ | `scripts/install_service.sh` + launchd template + `DEPLOY.md` |
+| B2 cloud-drop not configurable | ✅ | `INBOX_PATH` override (verified honored at boot) |
+| B3 no control surface | ✅ | engine-served mobile control page `/api/copilot/control` |
+| B4 decks vanish silently | ✅ | image-only/empty PDFs → `completed_empty` with reason (vision still needs a Kimi key) |
+| M1 silent empty success | ✅ | `completed_empty` status + reason in SourceStatus + status note |
+| M2 no heartbeat/feedback | ✅ | `99-System/Aily Status.md` (alive / what's new / needs-you) |
+| M3 no backup | ✅ | daily snapshot to `~/.aily/backups/` (7-day retention) |
+| M4 phantom `07-Proposal` | ✅ | Residual quarantined (no longer runs) |
+| M5 plugin dead-end | ✅ | removed the reserved_not_invoked workflow modal |
+| M6 garbage notes | ✅ | no fallback placeholder notes; confidence/placeholder filter |
+| M7 large-doc truncation | ✅ | size-aware per-source budget (bounded by hard cap) |
+| M8 stale docs | ✅ | README/AGENTS/CURRENT_STATE rewritten; planning sediment → `docs/history/` |
+| M9 cold-start recovery | ✅ | stale-lock requeue at startup |
+| cost runaway | ✅ | soft daily call cap (`llm_daily_max_calls`); detection is LLM-free |
+| auth errors / WAL / logs / boilerplate / config prune | ✅ | 401/403 fail-fast; candidates WAL; rotating logs; de-cluttered Data notes; orphan fields removed |
+
+The analysis below is retained as the original audit.
+
 ## Target being measured against
 
 A product you **live in**, not a dev build:
