@@ -96,6 +96,7 @@ ui_upload_tasks: dict[str, asyncio.Task[Any]] = {}
 source_worker_tasks: list[asyncio.Task[Any]] = []
 source_worker_stop: asyncio.Event | None = None
 synthesis_detection_task: asyncio.Task[Any] | None = None
+heartbeat_task: asyncio.Task[Any] | None = None
 inbox_watcher: WatchedInboxService | None = None
 workflow_tasks: dict[str, asyncio.Task[Any]] = {}
 ui_upload_semaphore = asyncio.Semaphore(max(1, SETTINGS.ui_upload_concurrency))
@@ -2480,6 +2481,110 @@ def _validate_runtime_security_config() -> None:
         raise RuntimeError("; ".join(errors))
 
 
+def _render_status_note(snapshot: dict[str, Any]) -> str:
+    """Pure: render the vault-visible Aily Status note from a snapshot.
+
+    This is the user's "is my brain alive / what's new / what needs me" view on
+    Obsidian Publish — no terminal required.
+    """
+    counts = snapshot.get("counts", {})
+    recent = snapshot.get("recent", [])
+    attention = snapshot.get("attention", [])
+    candidates = snapshot.get("candidates", [])
+    updated = snapshot.get("updated", "")
+    lines = [
+        "---",
+        "aily_generated: true",
+        "note_type: system",
+        f"updated: {updated}",
+        "---",
+        "",
+        "# Aily Status",
+        "",
+        f"🟢 Engine running — last heartbeat {updated}",
+        "",
+        "## Queue",
+        f"- queued: {counts.get('queued', 0)} · processing: {counts.get('processing', 0)} "
+        f"· completed: {counts.get('completed', 0)} · empty: {counts.get('completed_empty', 0)} "
+        f"· failed: {counts.get('failed', 0)}",
+        f"- pending synthesis candidates: {len(candidates)}",
+        "",
+        "## Recently refined",
+    ]
+    if recent:
+        lines += [f"- {r['title']} — {r['status']} ({r['updated']})" for r in recent]
+    else:
+        lines.append("- (nothing yet — drop a file into the inbox)")
+    if attention:
+        lines += ["", "## Needs your attention"]
+        lines += [f"- {a}" for a in attention]
+    if candidates:
+        lines += ["", "## Synthesis candidates awaiting approval"]
+        lines += [f"- {c['scope_label']} (readiness {c['readiness_score']:.1f})" for c in candidates[:10]]
+    lines.append("")
+    return "\n".join(lines)
+
+
+async def _write_status_note() -> None:
+    """Gather a status snapshot and write it to <vault>/99-System/Aily Status.md."""
+    vault = SETTINGS.resolved_vault_path
+    if not vault:
+        return
+    listing = await source_store.list_sources(limit=200, offset=0)
+    rows = listing.get("sources", []) if isinstance(listing, dict) else []
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[str(r.get("status") or "")] = counts.get(str(r.get("status") or ""), 0) + 1
+
+    def _title(r: dict[str, Any]) -> str:
+        md = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
+        return str(r.get("filename") or md.get("title") or r.get("normalized_source") or r.get("source_id") or "source")
+
+    recent = [{"title": _title(r), "status": str(r.get("status") or ""), "updated": str(r.get("updated_at") or "")} for r in rows[:10]]
+    attention: list[str] = []
+    for r in rows:
+        st = str(r.get("status") or "")
+        md = r.get("metadata") if isinstance(r.get("metadata"), dict) else {}
+        if st == "completed_empty":
+            attention.append(f"⚠️ {_title(r)} produced no notes — {md.get('empty_reason', 'needs review')}")
+        elif st in {"failed", "failed_retry_exhausted"}:
+            attention.append(f"❌ {_title(r)} failed — {md.get('error', 'see logs')}")
+    candidates = []
+    try:
+        candidates = await synthesis_store.list(status="pending", limit=20)
+    except Exception:
+        pass
+    snapshot = {
+        "updated": datetime.now().isoformat(timespec="seconds"),
+        "counts": counts,
+        "recent": recent,
+        "attention": attention[:15],
+        "candidates": candidates,
+    }
+    note = _render_status_note(snapshot)
+    target = Path(vault).expanduser() / "99-System" / "Aily Status.md"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(target.write_text, note, "utf-8")
+    except OSError as exc:
+        logger.warning("Failed to write status note: %s", exc)
+
+
+async def _heartbeat_loop(stop_event: asyncio.Event) -> None:
+    """Periodically refresh the vault-visible Aily Status note."""
+    while not stop_event.is_set():
+        try:
+            await _write_status_note()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[HEARTBEAT] status note refresh failed")
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=60.0)
+        except TimeoutError:
+            continue
+
+
 async def _synthesis_detection_loop(stop_event: asyncio.Event) -> None:
     """Automatic, cheap detection: enqueue ripe synthesis candidates.
 
@@ -2522,7 +2627,7 @@ async def lifespan(app: FastAPI):
     global dikiwi_mind
     global browser_manager_instance
     global source_worker_stop, source_worker_tasks, inbox_watcher
-    global synthesis_detection_task
+    global synthesis_detection_task, heartbeat_task
     _validate_runtime_security_config()
     await db.initialize()
     await graph_db.initialize()
@@ -2601,6 +2706,8 @@ async def lifespan(app: FastAPI):
             _synthesis_detection_loop(source_worker_stop)
         )
         logger.info("Synthesis detection loop started (recommend-only, approval-gated)")
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(source_worker_stop))
+    logger.info("Heartbeat loop started (writes 99-System/Aily Status.md)")
     if SETTINGS.inbox_watcher_enabled:
         inbox_watcher = WatchedInboxService(
             source_store=source_store,
@@ -2620,6 +2727,10 @@ async def lifespan(app: FastAPI):
         synthesis_detection_task.cancel()
         await asyncio.gather(synthesis_detection_task, return_exceptions=True)
         synthesis_detection_task = None
+    if heartbeat_task is not None:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+        heartbeat_task = None
     for task in workflow_tasks.values():
         task.cancel()
     if workflow_tasks:
