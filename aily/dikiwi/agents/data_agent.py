@@ -391,14 +391,10 @@ class DataAgent(DikiwiAgent):
                     ]
         except Exception as exc:
             logger.warning("[DIKIWI] Fallback extraction failed for %s: %s", source, exc)
-        return [
-            DataPoint(
-                id=f"dp_{uuid.uuid4().hex[:8]}",
-                content=f"[Content from {source} - extraction failed, manual review needed]",
-                source=source,
-                confidence=0.0,
-            )
-        ]
+        # Produce NO data point on failure. A garbage 0-confidence placeholder
+        # would become a permanent note; instead the source ends 'completed_empty'
+        # (see _terminal_status_for_result) with an honest reason.
+        return []
 
     def _filter_data_points(self, data_points: list[DataPoint]) -> list[DataPoint]:
         filtered: list[DataPoint] = []
@@ -420,6 +416,13 @@ class DataAgent(DikiwiAgent):
 
     def _data_point_rejection_reason(self, data_point: DataPoint) -> str | None:
         content = " ".join(data_point.content.split())
+        # Never let extraction-failure placeholders or zero-confidence content
+        # become permanent notes.
+        lowered = content.lower()
+        if "extraction failed" in lowered or "manual review needed" in lowered:
+            return "extraction-failure placeholder"
+        if float(getattr(data_point, "confidence", 1.0) or 0.0) <= 0.0:
+            return "zero confidence"
         if self._is_generic_page_datapoint(data_point):
             return "generic page/slide container"
         if data_point.modality == "visual":

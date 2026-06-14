@@ -675,7 +675,6 @@ class DikiwiMind:
             from aily.dikiwi.agents.insight_agent import InsightAgent
             from aily.dikiwi.agents.wisdom_agent import WisdomAgent
             from aily.dikiwi.agents.impact_agent import ImpactAgent
-            from aily.dikiwi.agents.residual_agent import ResidualAgent
             from aily.dikiwi.orchestrator import DikiwiOrchestrator, PipelineConfig
             from aily.dikiwi.stages import DikiwiStage as OrchestratorDikiwiStage
 
@@ -713,20 +712,10 @@ class DikiwiMind:
             # Run pipeline
             pipeline = await orchestrator.run_pipeline(ctx)
 
-            # Post-IMPACT Residual synthesis. The autonomous Reactor/Entrepreneur
-            # screening that previously consumed these proposals has been removed;
-            # value generation now runs only through the explicit value workflow.
-            residual_result: StageResult | None = None
-            has_impact = any(
-                sr.stage == DikiwiStage.IMPACT and sr.success
-                for sr in ctx.stage_results
-            )
-            if pipeline.status == "completed" and has_impact:
-                try:
-                    residual_result = await ResidualAgent().execute(ctx)
-                    ctx.stage_results.append(residual_result)
-                except Exception as exc:
-                    logger.warning("[DIKIWI] ResidualAgent failed: %s", exc)
+            # Impact is the terminal value output. The Residual proposal analyst
+            # (and its old Reactor/Entrepreneur consumers) is quarantined — it
+            # wrote to a non-layout folder (07-Proposal) and has no consumer in
+            # the trimmed product.
 
             # Transfer results
             result.stage_results = list(ctx.stage_results)
