@@ -2570,15 +2570,52 @@ async def _write_status_note() -> None:
         logger.warning("Failed to write status note: %s", exc)
 
 
+def _prune_backups(backup_dir: Path, *, keep: int = 7) -> None:
+    try:
+        zips = sorted(backup_dir.glob("aily-backup-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in zips[keep:]:
+            old.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+async def _run_daily_backup() -> bool:
+    """Snapshot derived state (vault + sources + graph + source store) to a dated zip."""
+    vault = SETTINGS.resolved_vault_path
+    if not vault:
+        return False
+    out = SETTINGS.aily_data_dir / "backups" / f"aily-backup-{datetime.now().strftime('%Y-%m-%d')}.zip"
+    try:
+        await asyncio.to_thread(
+            create_backup,
+            vault_path=Path(vault).expanduser(),
+            graph_db_path=SETTINGS.graph_db_path,
+            source_store_db_path=SETTINGS.source_store_db_path,
+            source_object_dir=SETTINGS.source_object_dir,
+            output_path=out,
+        )
+        _prune_backups(out.parent, keep=7)
+        logger.info("Daily backup written: %s", out)
+        return True
+    except Exception:
+        logger.exception("Daily backup failed")
+        return False
+
+
 async def _heartbeat_loop(stop_event: asyncio.Event) -> None:
-    """Periodically refresh the vault-visible Aily Status note."""
+    """Refresh the vault-visible Aily Status note (every 60s) and take one
+    backup per day (the heartbeat tick doubles as the daily-backup scheduler)."""
+    last_backup_date = None
     while not stop_event.is_set():
         try:
             await _write_status_note()
+            today = datetime.now().date()
+            if last_backup_date != today and await _run_daily_backup():
+                last_backup_date = today
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("[HEARTBEAT] status note refresh failed")
+            logger.exception("[HEARTBEAT] refresh/backup failed")
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=60.0)
         except TimeoutError:
