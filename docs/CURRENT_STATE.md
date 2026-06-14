@@ -1,94 +1,65 @@
 # Aily Current State
 
-This file is the shortest trustworthy map of the codebase as it exists now.
+Shortest trustworthy map of the codebase as it exists now. (Superseded design
+docs are in `docs/history/`.)
 
-## Active Runtime
+## What Aily is
 
-- App bootstrap: `aily/main.py`
-- Legacy GUI: removed for the Aily V1 UI redesign
-- Continuous pipeline entrypoint: `aily/sessions/dikiwi_mind.py`
-- DIKIWI runtime coordination: `aily/dikiwi/orchestrator.py`
-- DIKIWI graph-trigger selector: `aily/dikiwi/network_synthesis.py`
-- Post-pipeline proposal synthesis: `aily/dikiwi/agents/residual_agent.py`
-- Innovation scheduler: `aily/sessions/reactor_scheduler.py`
-- Business evaluation scheduler: `aily/sessions/entrepreneur_scheduler.py`
-- GStack and Guru planning: `aily/sessions/gstack_agent.py`
-- Chaos ingestion bridge: `aily/chaos/dikiwi_bridge.py`
-- Chaos daemon entrypoint: `scripts/run_chaos_daemon.py`
-- Real-run evidence primitives: `aily/verify/evidence.py`
-- Evidence run registry/API: `aily/verify/run_registry.py`
-- Durable source store: `aily/source_store/store.py`
-- Canonical Markdown package converter: `aily/processing/canonical_markdown.py`
-- V1 watched inbox plumbing: `aily/inbox/watcher.py`
-- Optional SourceFoundationGraph intake path: `aily/orchestration/source_foundation_graph.py`
-- Manual V1 I/W/I trigger: `/api/ui/workflows/iwi`
-- Persistent Studio event log: `aily/ui/events.py`
-- Provider route and timeout control: `aily/llm/provider_routes.py`, `aily/llm/llm_router.py`
-- Provider capability matrix: `aily/llm/provider_capabilities.py`
-- Hosted-mode guardrails: `aily/security/`
-- Aily-Copilot backend API: `aily/copilot/`, mounted under `/api/copilot`
-- Aily-Copilot Obsidian companion plugin:
-  `obsidian-plugin/aily-copilot`, now a full upstream-derived fork of
-  `logancyang/obsidian-copilot` with the upstream React chat surface preserved
-  and an added native Aily chain mode, installed and enabled in the iCloud
-  vault
+A single-user, Obsidian-native knowledge refinery: drop files/links into one
+inbox folder → refined Data/Information/Knowledge notes in the vault →
+approval-gated Insight/Wisdom/Impact synthesis.
 
-## Active Flow
+## Active runtime
 
-1. Input enters through Feishu WebSocket, the chaos bridge, queue-driven jobs, Aily Studio uploads, Aily Studio URL submission, or the V1 watched inbox.
-2. Studio uploads and URLs are hashed and persisted into the source store before extraction or downstream work.
-3. V1 automatic ingestion defaults to foundation-only mode through `SETTINGS.dikiwi_foundation_only_ingestion=true`; file, URL, Studio, and Chaos batch ingestion stop after `KNOWLEDGE` unless a drop explicitly requests full DIKIWI.
-4. The older incremental graph-growth trigger remains available for full DIKIWI runs, but Insight/Wisdom/Impact are treated as triggered synthesis work rather than default ingestion work.
-5. After IMPACT, Reactor and Entrepreneur components still exist as legacy higher-order engines that V1 should wrap or quarantine behind the new orchestrator design.
-6. Notes are written into the numbered Obsidian vault layout.
-7. Aily-Copilot can search and read the configured vault, build citation-ready
-   context envelopes, expose content-based graph/relevant-note navigation,
-   scope retrieval through local projects, and stage preview-first note writes.
-8. The Aily-Copilot companion plugin is installed and enabled in the iCloud
-   vault. It uses Obsidian Copilot's upstream chat UI and routes the `Aily`
-   chat mode through Aily backend chat APIs with vault citations.
+- Engine entry: `aily/main.py` (`uvicorn aily.main:app`)
+- Config: `aily/config.py` (`.env`; see `.env.example`)
+- Intake: `aily/inbox/watcher.py` → `aily/source_store/` → `aily/processing/`
+  (extraction → `canonical_markdown.py`)
+- Foundation pipeline (D→I→K): `aily/sessions/dikiwi_mind.py`,
+  `aily/dikiwi/orchestrator.py`, `aily/dikiwi/agents/{data,information,knowledge}_agent.py`
+- Higher-order agents (I/W/I): `aily/dikiwi/agents/{insight,wisdom,impact}_agent.py`
+  (run only via approved/triggered synthesis)
+- Graph-change readiness signal: `aily/dikiwi/network_synthesis.py`
+- Synthesis detection + candidate queue: `aily/synthesis/` (detector + store)
+- Writer: `aily/writer/dikiwi_obsidian.py`
+- Product APIs: `aily/copilot/` under `/api/copilot` (chat, vault search,
+  source status, candidates, `/control` page)
+- Vault status note: `99-System/Aily Status.md` (heartbeat / what's new / needs-you)
+- LLM routing: `aily/llm/provider_routes.py` (single-provider fallback)
+- Evidence harness: `aily/verify/`
 
-## Active Vault Layout
+## Active flow
 
-- `00-Chaos`
-- `01-Data`
-- `02-Information`
-- `03-Knowledge`
-- `04-Insight`
-- `05-Wisdom`
-- `06-Impact`
-- `07-Research`
-- `08-Evaluations`
-- `09-Business-Plans`
-- `10-Dossiers`
-- `99-MOC`
-- `99-System`
+1. A file/link lands in the inbox (cloud-synced folder via `INBOX_PATH`, or
+   `<vault>/00-Chaos/_inbox`); the watcher hashes/dedups and queues it.
+2. The source worker extracts → canonical Markdown → DIKIWI foundation
+   (Data → Information → Knowledge). Foundation-only by default.
+3. A source with zero notes is reported `completed_empty` with a reason.
+4. The detector (daily + knowledge-growth threshold; no LLM) recommends ripe
+   subgraphs into the candidate queue.
+5. The user approves a candidate (control page / candidate API) → Insight →
+   Wisdom → Impact runs over that scope and writes notes. Impact is terminal.
 
-## Reference Docs
+## Vault layout
 
-- `README.md` - repo entrypoint and current workflow overview
-- `docs/AILY_V1_UPGRADE_PLAN.md` - authoritative Aily V1 upgrade and migration guide
-- `docs/AILY_V2_PRODUCT_DEFINITION.md` - Obsidian-plugin product definition,
-  feature taxonomy, positioning, and V2 roadmap
-- `docs/AILY_V2_PRODUCT_REVIEW.md` - product-team review of V2 definition,
-  risks, open decisions, and recommended roadmap revision
-- `docs/AILY_V2_0_REQUIREMENTS.md` - implementation contract for the V2.0
-  source-foundation release
-- `docs/ARCHITECTURE_AND_VISION.md` - high-level system map
-- `docs/DIKIWI_ARCHITECTURE.md` - current DIKIWI runtime and post-pipeline flow
-- `docs/AILY_CHAOS_ARCHITECTURE.md` - current chaos ingestion and bridge path
-- `docs/AI_INNOVATION_METHODOLOGIES.md` - framework reference
-- `docs/prompt-improvement-spec.md` - prompt design direction and prompt-layer changes
+`00-Chaos` (+ `_inbox`), `01-Data`, `02-Information`, `03-Knowledge`,
+`04-Insight`, `05-Wisdom`, `06-Impact`, `07-Research`, `08-Evaluations`,
+`09-Business-Plans`, `10-Dossiers`, `99-MOC`, `99-System`.
 
-## V1 Test Infrastructure Status
+## Removed / quarantined
 
-- Legacy test suites, integration mocks, report artifacts, and ad hoc runner scripts have been removed.
-- Aily V1 needs a newly designed GUI plus test/evidence harness aligned with LangGraph workflows, Obsidian persistence, provider research packets, exports, and email delivery.
-- Until the V1 harness lands, use lightweight import/build sanity checks and real-path manual evidence only; do not claim acceptance from mocked LLM, mocked graph, mocked vault, or fake browser events.
+- **Removed:** autonomous Reactor/Entrepreneur/GStack schedulers, the Feishu
+  pipeline, the chaos daemon, `thinking/frameworks`, dead `gating` flow,
+  `dikiwi/skills` + `memorials`. (History in `docs/history/`.)
+- **Quarantined (in-tree, not on the live path):** `dikiwi/agents/residual_agent.py`.
 
-## Experimental Or Quarantined
+## Tests
 
-- `aily/dikiwi/skills/` is shipped in-tree but is not part of the active production path.
-- `aily/dikiwi/memorials/` is shipped in-tree but is not wired into the active runtime.
-- `aily/gating/` remains as older/secondary infrastructure and fallback material, not the primary DIKIWI path.
-- Provider benchmarking and smoke-check scripts have been removed with the legacy test harness; V1 should reintroduce provider evaluation as part of the redesigned evidence system.
+`uv run pytest` — real suite covering processing/email, source status, inbox,
+candidate queue/detector, provider routing, terminal status, status note,
+config precedence, and cut invariants.
+
+## Not yet done
+
+See `GAP.md` for the remaining gaps (e.g. dossier/business-plan outputs, plugin
+Source-Monitor view, vision ingestion) and the critical path.
