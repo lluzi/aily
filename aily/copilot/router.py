@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from starlette.requests import HTTPConnection
 
@@ -214,6 +215,59 @@ def source_status_from_row(row: dict[str, Any], package: dict[str, Any] | None) 
         "last_processed_at": row.get("updated_at"),
         "next_action": _next_action(status),
     }
+
+
+_CONTROL_PAGE_HTML = """<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aily Control</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 16px; max-width: 720px; }
+  h1 { font-size: 20px; } h2 { font-size: 15px; opacity: .7; margin-top: 28px; text-transform: uppercase; letter-spacing: .04em; }
+  .card { border: 1px solid rgba(128,128,128,.3); border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
+  .title { font-weight: 600; }
+  .meta { font-size: 13px; opacity: .65; margin-top: 2px; }
+  button { font-size: 15px; padding: 9px 16px; margin: 10px 8px 0 0; border-radius: 9px; border: 0; cursor: pointer; }
+  .approve { background: #2da44e; color: #fff; } .dismiss { background: rgba(128,128,128,.25); }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 20px; background: rgba(128,128,128,.2); }
+  .empty { color: #c93c37; } .ok { color: #2da44e; } .muted { opacity: .55; }
+  #err { color: #c93c37; }
+</style></head><body>
+<h1>🧠 Aily Control</h1>
+<div id="err"></div>
+<h2>Synthesis candidates</h2><div id="candidates"></div>
+<h2>Recent sources</h2><div id="sources"></div>
+<p class="muted" id="ts"></p>
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+const H = token ? {'x-aily-token': token} : {};
+async function api(path, method){ const r = await fetch(path, {method: method||'GET', headers: H});
+  if(!r.ok) throw new Error(path+' -> '+r.status); return r.json(); }
+async function approve(id){ await api('/api/copilot/candidates/'+id+'/approve','POST'); refresh(); }
+async function dismiss(id){ await api('/api/copilot/candidates/'+id+'/dismiss','POST'); refresh(); }
+function esc(s){ return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+async function refresh(){
+  try {
+    document.getElementById('err').textContent='';
+    const c = await api('/api/copilot/candidates?status=pending');
+    document.getElementById('candidates').innerHTML = (c.candidates||[]).length ? c.candidates.map(x=>
+      `<div class="card"><div class="title">${esc(x.scope_label)||'(topic)'}</div>
+       <div class="meta">readiness ${(+x.readiness_score).toFixed(1)} · ${esc(x.reason||'')}</div>
+       <button class="approve" onclick="approve('${x.candidate_id}')">Approve → synthesize</button>
+       <button class="dismiss" onclick="dismiss('${x.candidate_id}')">Dismiss</button></div>`).join('')
+      : '<p class="muted">No candidates awaiting approval.</p>';
+    const s = await api('/api/copilot/sources?limit=20');
+    document.getElementById('sources').innerHTML = (s.sources||[]).map(x=>{
+      const st = x.processing_status||''; const cls = st==='completed_empty'?'empty':(st==='completed'?'ok':'muted');
+      const why = x.last_error ? ` · ${esc(x.last_error)}` : '';
+      return `<div class="card"><div class="title">${esc(x.display_title)}</div>
+        <div class="meta"><span class="pill ${cls}">${esc(st)}</span>${why}</div></div>`; }).join('');
+    document.getElementById('ts').textContent = 'updated '+new Date().toLocaleTimeString();
+  } catch(e){ document.getElementById('err').textContent = 'Error: '+e.message+' (check token)'; }
+}
+refresh(); setInterval(refresh, 15000);
+</script></body></html>"""
 
 
 def create_copilot_router(
@@ -457,6 +511,13 @@ def create_copilot_router(
         if isinstance(result, dict) and result.get("not_found"):
             raise HTTPException(status_code=404, detail="Source not found")
         return result
+
+    @router.get("/control", response_class=HTMLResponse)
+    async def control_page() -> HTMLResponse:
+        """Mobile-friendly control page: approve/dismiss candidates + see source
+        status. Reachable over Tailscale (open /api/copilot/control?token=...);
+        the only human surface for the value loop that works from a phone."""
+        return HTMLResponse(_CONTROL_PAGE_HTML)
 
     @router.get("/candidates")
     async def list_candidates(request: Request, status: str = "pending", limit: int = 50) -> dict[str, Any]:

@@ -14,6 +14,18 @@ from aily.synthesis.candidates import (
 )
 
 
+async def test_control_page_served(tmp_path):
+    app = FastAPI()
+    app.include_router(create_copilot_router(vault_path=Path(tmp_path)))
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/copilot/control")
+        assert r.status_code == 200
+        assert "text/html" in r.headers["content-type"]
+        assert "Aily Control" in r.text
+        assert "/api/copilot/candidates/" in r.text  # approve/dismiss wiring present
+
+
 async def test_candidate_api_list_approve_dismiss(tmp_path):
     store = SynthesisCandidateStore(tmp_path / "cand.db")
     await store.initialize()
