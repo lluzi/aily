@@ -68,6 +68,20 @@ from aily.security.rate_limit import FixedWindowRateLimiter
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+# Bounded, rotated log file so a 24/7 unattended engine never fills the disk
+# (launchd's own StandardErrorPath does not rotate).
+try:
+    from logging.handlers import RotatingFileHandler
+
+    _log_dir = SETTINGS.aily_data_dir / "logs"
+    _log_dir.mkdir(parents=True, exist_ok=True)
+    _file_handler = RotatingFileHandler(
+        _log_dir / "aily.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    _file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.getLogger().addHandler(_file_handler)
+except Exception:  # pragma: no cover - logging must never break startup
+    logger.warning("Could not attach rotating log file", exc_info=True)
 HAS_MULTIPART = importlib.util.find_spec("python_multipart") is not None
 
 db = QueueDB(SETTINGS.queue_db_path)

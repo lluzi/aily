@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     llm_trace_log_path: Path | None = None
     dikiwi_foundation_only_ingestion: bool = True
     dikiwi_max_llm_calls_per_source: int = 30
+    # Large documents get more headroom (scaled by length) so they aren't
+    # silently truncated at the base cap; still bounded by this hard ceiling.
+    dikiwi_max_llm_calls_hard_cap: int = 120
     # Soft aggregate ceiling on LLM calls per calendar day (0 = unlimited). A
     # guardrail so a huge dropped batch can't run away unattended.
     llm_daily_max_calls: int = 0

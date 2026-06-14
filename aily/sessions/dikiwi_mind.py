@@ -404,12 +404,24 @@ class DikiwiMind:
             DikiwiStage.IMPACT: ImpactAgent(),
         }
 
+    @staticmethod
+    def _max_calls_for_content(content: str) -> int:
+        """Scale the per-source call budget with document size (bounded).
+
+        Small docs keep the base cap; large ones get ~1 extra call per 4k chars
+        beyond the first 8k so they aren't silently truncated, up to a hard cap.
+        """
+        base = int(SETTINGS.dikiwi_max_llm_calls_per_source)
+        hard = int(SETTINGS.dikiwi_max_llm_calls_hard_cap)
+        extra = max(0, len(content or "") - 8000) // 4000
+        return max(base, min(hard, base + extra))
+
     def _build_agent_context(self, drop: "RainDrop", pipeline_id: str):
         from aily.dikiwi.agents.context import AgentContext
 
         memory = self._get_or_create_memory(pipeline_id)
         self._llm_budgets[pipeline_id] = LLMUsageBudget(
-            max_calls=SETTINGS.dikiwi_max_llm_calls_per_source,
+            max_calls=self._max_calls_for_content(getattr(drop, "content", "") or ""),
             stage_round_limit=SETTINGS.dikiwi_stage_round_limit,
         )
         return AgentContext(

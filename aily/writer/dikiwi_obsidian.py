@@ -1293,17 +1293,6 @@ LIMIT 10
             body_parts.append(f"- Source Page: {source_page}")
         if context:
             body_parts.extend(["", "## Context", context])
-        body_parts.extend(
-            [
-                "",
-                "## Why This Matters",
-                (
-                    "This datum is preserved because it can be used as grounded evidence for later Information "
-                    "and Knowledge notes. Read it together with its source trace and any connected classification "
-                    "notes before using it as support for a larger claim."
-                ),
-            ]
-        )
         if source_evidence:
             body_parts.extend(["", "## Source Evidence", *[f"- {e}" for e in source_evidence]])
         if asset_embeds:
