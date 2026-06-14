@@ -1,7 +1,6 @@
 import { logFileManager } from "@/logFileManager";
 import { FileCache } from "@/cache/fileCache";
 import { ProjectContextCache } from "@/cache/projectContextCache";
-import { openEndToEndValueWorkflowModal } from "@/aily/workflowTools";
 import { logError } from "@/logger";
 import {
   clearRecordedPromptPayload,
@@ -121,10 +120,6 @@ export function registerCommands(
 
   addCommand(plugin, COMMAND_IDS.OPEN_COPILOT_CHAT_WINDOW, async () => {
     await plugin.activateView();
-  });
-
-  addCommand(plugin, COMMAND_IDS.RUN_END_TO_END_VALUE_WORKFLOW, () => {
-    openEndToEndValueWorkflowModal(plugin.app);
   });
 
   addCommand(plugin, COMMAND_IDS.NEW_CHAT, async () => {

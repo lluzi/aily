@@ -1,5 +1,4 @@
 import { getCurrentProject, setCurrentProject, setProjectLoading, useChainType } from "@/aiParams";
-import { openEndToEndValueWorkflowModal } from "@/aily/workflowTools";
 import { ProjectContextCache } from "@/cache/projectContextCache";
 import { ChainType } from "@/chainType";
 import { ConfirmModal } from "@/components/modals/ConfirmModal";
@@ -361,13 +360,6 @@ export function ChatControls({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="tw-w-64">
-            <DropdownMenuItem
-              className="tw-flex tw-items-center tw-gap-2"
-              onSelect={() => openEndToEndValueWorkflowModal(app)}
-            >
-              <Sparkles className="tw-size-4" />
-              Run End-To-End Value Workflow
-            </DropdownMenuItem>
             <DropdownMenuItem
               className="tw-flex tw-justify-between"
               onSelect={(e) => {
