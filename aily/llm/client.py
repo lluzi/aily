@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import httpx
 
+from aily.llm.spend_guard import SpendCapExceeded, record_call
 from aily.runtime.backpressure import provider_backpressure
 from aily.ui.events import emit_ui_event
 from aily.ui.telemetry import get_ui_telemetry_context
@@ -227,6 +228,14 @@ class LLMClient:
         temperature: float = 0.7,
         response_format: Optional[dict[str, str]] = None,
     ) -> str:
+        # Soft aggregate daily ceiling (guardrail for unattended operation).
+        try:
+            from aily.config import SETTINGS
+
+            record_call(int(getattr(SETTINGS, "llm_daily_max_calls", 0) or 0))
+        except SpendCapExceeded as exc:
+            raise LLMError(str(exc)) from exc
+
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -238,6 +247,13 @@ class LLMClient:
                     await asyncio.sleep(self._retry_delay_seconds(attempt, exc))
             except httpx.HTTPStatusError as exc:
                 last_error = exc
+                if exc.response.status_code in (401, 403):
+                    # Auth failures won't fix themselves on retry — fail fast with
+                    # a clear, surfaced reason (shows up in the status note).
+                    raise LLMError(
+                        f"LLM auth failed ({exc.response.status_code}) — check the API key "
+                        f"for provider '{self._provider_name()}'"
+                    ) from exc
                 if exc.response.status_code == 429:
                     if attempt < self.max_retries:
                         wait_time = self._retry_delay_seconds(attempt, exc)

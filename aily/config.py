@@ -38,10 +38,6 @@ class MindsConfig:
 
 
 class Settings(BaseSettings):
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
-    feishu_verification_token: str = ""
-    feishu_encrypt_key: str = ""
     obsidian_rest_api_key: str = ""
     obsidian_vault_path: str = ""
     # Vault location must be configured explicitly (OBSIDIAN_VAULT_PATH or
@@ -61,18 +57,18 @@ class Settings(BaseSettings):
     llm_trace_log_path: Path | None = None
     dikiwi_foundation_only_ingestion: bool = True
     dikiwi_max_llm_calls_per_source: int = 30
+    # Soft aggregate ceiling on LLM calls per calendar day (0 = unlimited). A
+    # guardrail so a huge dropped batch can't run away unattended.
+    llm_daily_max_calls: int = 0
     dikiwi_stage_round_limit: int = 4
     dikiwi_stage_timeout_seconds: float = 600.0
     dikiwi_wisdom_review_enabled: bool = False
     dikiwi_batch_stage_concurrency: int = 4
-    reactor_method_timeout_seconds: float = 180.0
     dikiwi_incremental_trigger_ratio: float = 0.05
     dikiwi_network_min_nodes: int = 3
     dikiwi_network_trigger_score: float = 4.0
     dikiwi_network_max_candidate_nodes: int = 18
     dikiwi_higher_order_max_contexts: int = 3
-    mineru_batch_extract_concurrency: int = 4
-    entrepreneur_evaluation_timeout_minutes: int = 3
 
     # Higher-order synthesis (Insight/Wisdom/Impact) detection. Detection is
     # automatic and cheap; it only RECOMMENDS ripe topics into a candidate
@@ -104,10 +100,6 @@ class Settings(BaseSettings):
     # Browser Use commercial API
     browser_use_api_key: str = ""
 
-    aily_digest_enabled: bool = True
-    aily_digest_hour: int = 9
-    aily_digest_minute: int = 0
-    aily_digest_feishu_open_id: str = ""
     aily_data_dir: Path = Path.home() / ".aily"
     dikiwi_batch_lock_path: Path = Path.home() / ".aily" / "dikiwi_batch.lock"
 
@@ -126,13 +118,6 @@ class Settings(BaseSettings):
     # live in the durable source object store). URL-pointer files are moved too.
     inbox_archive_processed: bool = True
     research_daily_budget: int = 10
-    email_delivery_enabled: bool = False
-
-    # Voice memo settings
-    feishu_voice_enabled: bool = False  # Disabled by default until configured
-    whisper_api_key: str = ""  # Falls back to llm_api_key if empty
-    whisper_model: str = "whisper-1"
-    voice_temp_dir: Path = Path("/tmp/aily_voice")
 
     # File processing limits (bytes)
     max_file_size: int = 50 * 1024 * 1024  # 50MB default limit
